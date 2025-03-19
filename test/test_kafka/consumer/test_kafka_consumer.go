@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/yeyeye2333/PacificaMQ/logger"
+	"github.com/yeyeye2333/PacificaMQ/internal/logger"
 
 	"github.com/segmentio/kafka-go"
 )

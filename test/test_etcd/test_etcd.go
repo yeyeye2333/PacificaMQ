@@ -6,6 +6,7 @@ import (
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/client/v3/namespace"
 )
 
 func main() {
@@ -21,8 +22,24 @@ func main() {
 	_, err = cli.Put(ctx, "sample_key", "sample_value")
 	cancel()
 	if err != nil {
-		// handle error!
-	} else {
-		fmt.Printf("good")
+		fmt.Println(1, err)
+	}
+
+	var KV clientv3.KV = namespace.NewKV(cli.KV, "my-prefix/")
+	_, err = KV.Put(context.Background(), "sample_key", "my-value")
+	if err != nil {
+		fmt.Println(2, err)
+	}
+
+	old_key, err := cli.Get(context.Background(), "sample_key")
+	fmt.Println(old_key)
+	if err != nil {
+		fmt.Println(3, err)
+	}
+
+	new_key, err := KV.Get(context.Background(), "sample_key")
+	fmt.Println(new_key)
+	if err != nil {
+		fmt.Println(4, err)
 	}
 }

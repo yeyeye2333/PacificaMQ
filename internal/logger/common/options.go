@@ -31,7 +31,6 @@ func NewOptions(opts ...Option) *Options {
 
 type Option func(*Options)
 
-// Option for Options.
 func WithDriver(driver string) Option {
 	return func(o *Options) {
 		o.Driver = driver

@@ -5,7 +5,7 @@ import (
 	"strconv"
 
 	"github.com/linxGnu/grocksdb"
-	"github.com/yeyeye2333/PacificaMQ/logger"
+	"github.com/yeyeye2333/PacificaMQ/internal/logger"
 )
 
 func main() {

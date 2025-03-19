@@ -1,14 +1,14 @@
 package logger
 
 import (
-	"github.com/yeyeye2333/PacificaMQ/extension"
-	"github.com/yeyeye2333/PacificaMQ/logger/common"
-	_ "github.com/yeyeye2333/PacificaMQ/logger/zap"
+	"github.com/yeyeye2333/PacificaMQ/internal/extension"
+	"github.com/yeyeye2333/PacificaMQ/internal/logger/common"
+	_ "github.com/yeyeye2333/PacificaMQ/internal/logger/zap"
 )
 
 func init() {
 	//默认使用zap
-	default_logger, err := NewLogger(common.NewOptions())
+	default_logger, err := NewLogger()
 	if err != nil {
 		panic(err)
 	}
@@ -17,8 +17,9 @@ func init() {
 
 var logger common.Logger
 
-func NewLogger(opts *common.Options) (common.Logger, error) {
-	return extension.GetLogger(opts.Driver, opts.Internal)
+func NewLogger(opts ...common.Option) (common.Logger, error) {
+	options := common.NewOptions(opts...)
+	return extension.GetLogger(options.Driver, options.Internal)
 }
 
 func SetLogger(log common.Logger) {

@@ -4,8 +4,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/yeyeye2333/PacificaMQ/extension"
-	"github.com/yeyeye2333/PacificaMQ/logger/common"
+	"github.com/yeyeye2333/PacificaMQ/internal/extension"
+	"github.com/yeyeye2333/PacificaMQ/internal/logger/common"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
