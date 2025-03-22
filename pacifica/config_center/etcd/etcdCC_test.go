@@ -13,7 +13,7 @@ import (
 
 func newEtcdConfigCenter() (common.ConfigCenter, error) {
 	logger.SetLevel("debug")
-	return config_center.NewConfigCenter(common.WithName("etcd"))
+	return config_center.NewConfigCenter(common.WithConfigCenter("etcd"))
 }
 func Test_ConfigCenter(t *testing.T) {
 	cc, err := newEtcdConfigCenter()

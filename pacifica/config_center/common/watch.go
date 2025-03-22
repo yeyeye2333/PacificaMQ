@@ -1,21 +1,22 @@
 package common
 
 type ConfigWatcher interface {
-	Process(WatchEvent)
+	Process(*WatchEvent)
 }
 
 type EventType int
 
 const (
-	EventUpdateVersion EventType = iota
-
-	EventUpdateLeader
-
+	EventReplaceLeader EventType = iota
 	EventAddFollower
-	EventDelFollower
+	EventRemoveFollower
 )
 
 type WatchEvent struct {
-	Value interface{}
-	Event EventType
+	ClusterConfig
+	Type EventType
+}
+
+func (e *WatchEvent) Init() {
+	e.ClusterConfig.Init()
 }

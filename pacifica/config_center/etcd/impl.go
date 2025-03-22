@@ -39,6 +39,8 @@ type etcdConfigCenter struct {
 	kv      clientv3.KV
 	lease   clientv3.Lease
 	watcher clientv3.Watcher
+
+	parser parser
 }
 
 // 接口实现
@@ -70,6 +72,8 @@ func (cc *etcdConfigCenter) Start() error {
 	cc.kv = cc.cli.KV
 	cc.lease = cc.cli.Lease
 	cc.watcher = cc.cli.Watcher
+
+	cc.parser.init(cc.leaderPrefix, cc.followersPrefix, cc.versionPrefix)
 	return nil
 }
 
@@ -101,8 +105,8 @@ func (cc *etcdConfigCenter) GetConfig() (*common.ClusterConfig, error) {
 		case strings.HasPrefix(k, cc.followersPrefix):
 			clusterConfig.Followers[strings.Clone(k[len(cc.followersPrefix):])] = struct{}{}
 		case strings.HasPrefix(k, cc.versionPrefix):
-			version := conv.BytesToInt32(kv.Value)
-			clusterConfig.Version = int(version)
+			version := conv.BytesToUint64(kv.Value)
+			clusterConfig.Version = version
 		}
 	}
 	return clusterConfig, nil
@@ -113,49 +117,29 @@ func (cc *etcdConfigCenter) WatchConfig(configWatcher common.ConfigWatcher) {
 	go func() {
 		for response := range watchCh {
 			for _, event := range response.Events {
-				k := string(event.Kv.Key)
-				v := string(event.Kv.Value)
-				parm := common.WatchEvent{}
-				switch {
-				case (event.Type == clientv3.EventTypePut) && (strings.HasPrefix(k, cc.leaderPrefix)):
-					parm.Event = common.EventUpdateLeader
-					parm.Value = v
-				case (event.Type == clientv3.EventTypePut) && (strings.HasPrefix(k, cc.versionPrefix)):
-					parm.Event = common.EventUpdateVersion
-					parm.Value = conv.BytesToInt32(event.Kv.Value)
-				case (event.Type == clientv3.EventTypePut) && (strings.HasPrefix(k, cc.followersPrefix)):
-					parm.Event = common.EventAddFollower
-					parm.Value = strings.Clone(k[len(cc.followersPrefix):])
-				case (event.Type == clientv3.EventTypeDelete) && (strings.HasPrefix(k, cc.followersPrefix)):
-					parm.Event = common.EventDelFollower
-					parm.Value = strings.Clone(k[len(cc.followersPrefix):])
-				default:
-					continue
+				cc.parser.parse(event)
+				res := cc.parser.getEvents()
+				for _, parm := range res {
+					configWatcher.Process(parm)
 				}
-				configWatcher.Process(parm)
 			}
 		}
 	}()
 }
 
-func (cc *etcdConfigCenter) ReplaceLeader(new_leader string, new_version int) error {
+func (cc *etcdConfigCenter) ReplaceLeader(new_leader string, new_version uint64) error {
 	responses, err := cc.kv.Txn(cc.ctx).If(
 		clientv3.Compare(clientv3.CreateRevision(cc.versionPrefix), "!=", 0),
 	).Then(
 		clientv3.OpTxn(
 			[]clientv3.Cmp{
-				clientv3.Compare(clientv3.Value(cc.versionPrefix), "<", string(conv.Int32ToBytes(int32(new_version)))),
+				clientv3.Compare(clientv3.Value(cc.versionPrefix), "<", string(conv.Uint64ToBytes(new_version))),
 			},
-			[]clientv3.Op{
-				clientv3.OpPut(cc.leaderPrefix, new_leader),
-				clientv3.OpPut(cc.versionPrefix, string(conv.Int32ToBytes(int32(new_version)))),
-				clientv3.OpDelete(cc.followersPrefix + Sep + new_leader),
-			},
+			cc.replaceLeaderOP(new_leader, new_version, false),
 			[]clientv3.Op{},
 		),
 	).Else(
-		clientv3.OpPut(cc.leaderPrefix, new_leader),
-		clientv3.OpPut(cc.versionPrefix, string(conv.Int32ToBytes(int32(new_version)))),
+		cc.replaceLeaderOP(new_leader, new_version, true)...,
 	).Commit()
 
 	if err != nil {
@@ -167,57 +151,45 @@ func (cc *etcdConfigCenter) ReplaceLeader(new_leader string, new_version int) er
 	return nil
 }
 
-func (cc *etcdConfigCenter) AddFollower(follower string, new_version int) error {
+func (cc *etcdConfigCenter) AddFollower(follower string, new_version uint64) error {
 	responses, err := cc.kv.Txn(cc.ctx).If(
 		clientv3.Compare(clientv3.CreateRevision(cc.versionPrefix), "!=", 0),
 	).Then(
 		clientv3.OpTxn(
 			[]clientv3.Cmp{
-				clientv3.Compare(clientv3.Value(cc.versionPrefix), "<", string(conv.Int32ToBytes(int32(new_version)))),
+				clientv3.Compare(clientv3.Value(cc.versionPrefix), "<", string(conv.Uint64ToBytes(new_version))),
 			},
-			[]clientv3.Op{
-				clientv3.OpPut(cc.followersPrefix+Sep+follower, ""),
-				clientv3.OpPut(cc.versionPrefix, string(conv.Int32ToBytes(int32(new_version)))),
-			},
+			cc.addFollowerOP(follower, new_version),
 			[]clientv3.Op{},
 		),
-	).Else(
-		clientv3.OpPut(cc.followersPrefix+Sep+follower, ""),
-		clientv3.OpPut(cc.versionPrefix, string(conv.Int32ToBytes(int32(new_version)))),
 	).Commit()
 
 	if err != nil {
 		return err
 	}
-	if !responses.Succeeded {
+	if responses.Succeeded && !responses.Responses[0].GetResponseTxn().Succeeded {
 		return common.ErrVersionBehind
 	}
 	return nil
 }
 
-func (cc *etcdConfigCenter) RemoveFollower(follower string, new_version int) error {
+func (cc *etcdConfigCenter) RemoveFollower(follower string, new_version uint64) error {
 	responses, err := cc.kv.Txn(cc.ctx).If(
 		clientv3.Compare(clientv3.CreateRevision(cc.versionPrefix), "!=", 0),
 	).Then(
 		clientv3.OpTxn(
 			[]clientv3.Cmp{
-				clientv3.Compare(clientv3.Value(cc.versionPrefix), "<", string(conv.Int32ToBytes(int32(new_version)))),
+				clientv3.Compare(clientv3.Value(cc.versionPrefix), "<", string(conv.Uint64ToBytes(new_version))),
 			},
-			[]clientv3.Op{
-				clientv3.OpDelete(cc.followersPrefix + Sep + follower),
-				clientv3.OpPut(cc.versionPrefix, string(conv.Int32ToBytes(int32(new_version)))),
-			},
+			cc.removeFollowerOP(follower, new_version),
 			[]clientv3.Op{},
 		),
-	).Else(
-		clientv3.OpDelete(cc.followersPrefix+Sep+follower),
-		clientv3.OpPut(cc.versionPrefix, string(conv.Int32ToBytes(int32(new_version)))),
 	).Commit()
 
 	if err != nil {
 		return err
 	}
-	if !responses.Succeeded {
+	if responses.Succeeded && !responses.Responses[0].GetResponseTxn().Succeeded {
 		return common.ErrVersionBehind
 	}
 	return nil

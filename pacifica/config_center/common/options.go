@@ -31,7 +31,7 @@ func NewOptions(opts ...Option) *Options {
 
 type Option func(*Options)
 
-func WithName(name string) Option {
+func WithConfigCenter(name string) Option {
 	return func(opts *Options) {
 		opts.Name = name
 	}

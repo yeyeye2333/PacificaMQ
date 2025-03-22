@@ -1,6 +1,8 @@
 package common
 
-import "errors"
+import (
+	"errors"
+)
 
 type ConfigCenter interface {
 	Start() error
@@ -11,9 +13,9 @@ type ConfigCenter interface {
 	WatchConfig(configWatcher ConfigWatcher)
 
 	// 原子更新配置
-	ReplaceLeader(new_leader string, new_version int) error
-	AddFollower(follower string, new_version int) error
-	RemoveFollower(follower string, new_version int) error
+	ReplaceLeader(new_leader string, new_version uint64) error
+	AddFollower(follower string, new_version uint64) error
+	RemoveFollower(follower string, new_version uint64) error
 }
 
 var (
