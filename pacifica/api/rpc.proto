@@ -1,0 +1,47 @@
+syntax = "proto3";
+package api;
+
+import "pacifica/api/log_entry.proto";
+
+option go_package = "pacifica/api";
+
+service Replication {
+  rpc AppendEntries(AppendEntriesArgs) returns (AppendEntriesReply) {}
+  rpc InstallSnapshot(InstallSnapshotArgs) returns (InstallSnapshotReply) {}
+}
+
+message AppendEntriesArgs {
+  optional uint64 Version = 1;
+  optional string LeaderId = 2;
+  optional uint64 PrevLogIndex = 3;
+  optional uint64 PrevLogVersion = 4;
+  repeated Entry Entries = 5;
+  optional uint64 LeaderCommit = 6;
+}
+
+message AppendEntriesReply {
+  optional uint64 Version = 1;
+  optional uint64 XIndex =2;
+}
+
+message InstallSnapshotArgs {
+  optional uint64 Version = 1;
+  optional string LeaderId = 2;
+  optional Entry LastIncludedEntry = 3;
+  optional bytes Data = 4;
+}
+
+message InstallSnapshotReply {
+  optional uint64 Version = 1;
+}
+
+service AddNode{
+  rpc AddNode(AddNodeArgs) returns (AddNodeReply) {}
+}
+
+message AddNodeArgs {
+  optional string NodeId = 1;
+}
+
+message AddNodeReply {
+}

@@ -10,10 +10,16 @@ import (
 
 type configChanger struct {
 	configCenter ccCM.ConfigCenter
+	me           common.NodeID
+	// 回调前更新完config
+	becomeLeader   func()
+	becomeFollower func()
+	becomeLearner  func()
 
-	config common.Config
 	// 保护config外层Leader和Version
-	mu sync.RWMutex
+	mu            sync.RWMutex
+	config        common.Config
+	latestVersion common.Version
 }
 
 func (c *configChanger) Process(event *ccCM.WatchEvent) {
@@ -22,10 +28,30 @@ func (c *configChanger) Process(event *ccCM.WatchEvent) {
 	case ccCM.EventAddFollower:
 		for follower := range event.Followers {
 			c.config.ClusterConfig.Followers[follower] = struct{}{}
+			if c.becomeFollower != nil && follower == c.me {
+				func() {
+					c.mu.Lock()
+					defer c.mu.Unlock()
+					if c.latestVersion < c.config.ClusterConfig.Version {
+						c.latestVersion = c.config.ClusterConfig.Version
+						c.becomeFollower()
+					}
+				}()
+			}
 		}
 	case ccCM.EventRemoveFollower:
 		for follower := range event.Followers {
 			delete(c.config.ClusterConfig.Followers, follower)
+			if c.becomeLearner != nil && follower == c.me {
+				func() {
+					c.mu.Lock()
+					defer c.mu.Unlock()
+					if c.latestVersion < c.config.ClusterConfig.Version {
+						c.latestVersion = c.config.ClusterConfig.Version
+						c.becomeLearner()
+					}
+				}()
+			}
 		}
 	case ccCM.EventReplaceLeader:
 		c.config.ClusterConfig.Leader = event.Leader
@@ -33,9 +59,14 @@ func (c *configChanger) Process(event *ccCM.WatchEvent) {
 	}
 }
 
-func (c *configChanger) Start(opts ...ccCM.Option) error {
+func (c *configChanger) Start(me common.NodeID, opts ...ccCM.Option) error {
+	c.me = me
 	c.config.Init()
 	configCenter, err := config_center.NewConfigCenter(opts...)
+	if err != nil {
+		return err
+	}
+	err = configCenter.Start()
 	if err != nil {
 		return err
 	}
@@ -51,17 +82,51 @@ func (c *configChanger) Start(opts ...ccCM.Option) error {
 	return nil
 }
 
-func (c *configChanger) ChangeLeader(newLeader common.NodeID, newVersion common.Verson) {
+func (c *configChanger) Close() error {
+	return c.configCenter.Close()
+}
+
+func (c *configChanger) ChangeLeader(newLeader common.NodeID, newVersion common.Version) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.config.Version < newVersion {
+		c.latestVersion = newVersion
+		// 回调前更新config
+		oldLeader := c.config.Leader
 		c.config.Leader = newLeader
 		c.config.Version = newVersion
+		if c.becomeLearner != nil && oldLeader == c.me {
+			c.becomeLearner()
+		} else if c.becomeLeader != nil && c.config.Leader == c.me {
+			c.becomeLeader()
+		}
 	}
 }
 
-func (c *configChanger) GetLeader() (common.NodeID, common.Verson) {
+func (c *configChanger) GetLeader() (common.NodeID, common.Version) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.config.Leader, c.config.Version
+}
+
+func (c *configChanger) GetFollowers() []common.NodeID {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	followers := make([]common.NodeID, 0, len(c.config.ClusterConfig.Followers))
+	for follower := range c.config.ClusterConfig.Followers {
+		followers = append(followers, follower)
+	}
+	return followers
+}
+
+func (c *configChanger) SetBecomeLeader(cb func()) {
+	c.becomeLeader = cb
+}
+
+func (c *configChanger) SetBecomeFollower(cb func()) {
+	c.becomeFollower = cb
+}
+
+func (c *configChanger) SetBecomeLearner(cb func()) {
+	c.becomeLearner = cb
 }

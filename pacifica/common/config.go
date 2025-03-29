@@ -7,5 +7,5 @@ import (
 type Config struct {
 	ccCommon.ClusterConfig
 	Leader  NodeID
-	Version Verson
+	Version Version
 }
