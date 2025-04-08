@@ -3,40 +3,29 @@ package main
 import (
 	"context"
 	"fmt"
-	"time"
-
-	"github.com/yeyeye2333/PacificaMQ/internal/logger"
+	"log"
 
 	"github.com/segmentio/kafka-go"
 )
 
 func main() {
 	// to consume messages
-	topic := "my-topic"
-	partition := 0
+	r := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:  []string{"localhost:9092", "localhost:9093", "localhost:9094"},
+		GroupID:  "consumer-group-id",
+		Topic:    "topic-A",
+		MaxBytes: 10e6, // 10MB
+	})
 
-	conn, err := kafka.DialLeader(context.Background(), "tcp", "localhost:29092", topic, partition)
-	if err != nil {
-		logger.Fatal("failed to dial leader:", err)
-	}
-
-	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	batch := conn.ReadBatch(10e3, 1e6) // fetch 10KB min, 1MB max
-
-	b := make([]byte, 10e3) // 10KB max per message
+	ctx := context.Background()
 	for {
-		n, err := batch.Read(b)
+		m, err := r.FetchMessage(ctx)
 		if err != nil {
 			break
 		}
-		fmt.Println(string(b[:n]))
-	}
-
-	if err := batch.Close(); err != nil {
-		logger.Fatal("failed to close batch:", err)
-	}
-
-	if err := conn.Close(); err != nil {
-		logger.Fatal("failed to close connection:", err)
+		fmt.Printf("message at topic/partition/offset %v/%v/%v: %s = %s\n", m.Topic, m.Partition, m.Offset, string(m.Key), string(m.Value))
+		if err := r.CommitMessages(ctx, m); err != nil {
+			log.Fatal("failed to commit messages:", err)
+		}
 	}
 }

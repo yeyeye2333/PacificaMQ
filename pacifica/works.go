@@ -79,10 +79,21 @@ func (node *Node) leaderWork(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-node.nextAddCh:
-			for _, ch := range nextIndexChMap {
+			if len(nextIndexChMap) == 0 {
+				//单节点
+				node.mu.Lock()
+				node.commitIndex = atomic.LoadUint64(&node.nextIndex)
+				node.mu.Unlock()
 				select {
-				case ch <- struct{}{}:
+				case node.commitAddCh <- struct{}{}:
 				default:
+				}
+			} else {
+				for _, ch := range nextIndexChMap {
+					select {
+					case ch <- struct{}{}:
+					default:
+					}
 				}
 			}
 		case <-minCh:
@@ -195,6 +206,7 @@ func (node *Node) slaveSender(ctx context.Context, status Status, nodeID NodeID,
 	if err != nil {
 		node.Errorf("load max log failed: %v", err)
 	} else {
+		// 尝试append最后一条持久化日志恢复commitindex
 		nextIndex = *entry.Index
 	}
 

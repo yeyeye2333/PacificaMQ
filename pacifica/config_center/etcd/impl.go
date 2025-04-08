@@ -69,9 +69,9 @@ func (cc *etcdConfigCenter) Start() error {
 		return err
 	}
 	cc.cli = cli
-	cc.kv = cc.cli.KV
-	cc.lease = cc.cli.Lease
-	cc.watcher = cc.cli.Watcher
+	cc.kv = clientv3.NewKV(cc.cli)
+	cc.lease = clientv3.NewLease(cc.cli)
+	cc.watcher = clientv3.NewWatcher(cc.cli)
 
 	cc.parser.init(cc.leaderPrefix, cc.followersPrefix, cc.versionPrefix)
 	return nil
@@ -113,8 +113,8 @@ func (cc *etcdConfigCenter) GetConfig() (*common.ClusterConfig, error) {
 }
 
 func (cc *etcdConfigCenter) WatchConfig(configWatcher common.ConfigWatcher) {
-	watchCh := cc.watcher.Watch(cc.ctx, cc.rootPath)
 	go func() {
+		watchCh := cc.watcher.Watch(cc.ctx, cc.rootPath, clientv3.WithPrefix())
 		for response := range watchCh {
 			for _, event := range response.Events {
 				cc.parser.parse(event)

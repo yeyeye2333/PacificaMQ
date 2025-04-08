@@ -5,7 +5,6 @@ import (
 	"github.com/yeyeye2333/PacificaMQ/pacifica/extension"
 )
 
-func NewConfigCenter(opts ...common.Option) (common.ConfigCenter, error) {
-	options := common.NewOptions(opts...)
+func NewConfigCenter(options *common.Options) (common.ConfigCenter, error) {
 	return extension.GetConfigCenter(options.Name, options.Internal)
 }

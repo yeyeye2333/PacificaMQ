@@ -62,7 +62,7 @@ func (c *configChanger) Process(event *ccCM.WatchEvent) {
 func (c *configChanger) Start(me common.NodeID, opts ...ccCM.Option) error {
 	c.me = me
 	c.config.Init()
-	configCenter, err := config_center.NewConfigCenter(opts...)
+	configCenter, err := config_center.NewConfigCenter(ccCM.NewOptions(opts...))
 	if err != nil {
 		return err
 	}
