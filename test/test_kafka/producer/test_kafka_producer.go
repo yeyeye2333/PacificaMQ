@@ -2,34 +2,38 @@ package main
 
 import (
 	"context"
-	"time"
-
-	"github.com/yeyeye2333/PacificaMQ/internal/logger"
+	"log"
 
 	"github.com/segmentio/kafka-go"
 )
 
 func main() {
-	// to produce messages
-	topic := "my-topic"
-	partition := 0
-
-	conn, err := kafka.DialLeader(context.Background(), "tcp", "localhost:29092", topic, partition)
-	if err != nil {
-		logger.Fatal("failed to dial leader:", err)
+	// make a writer that produces to topic-A, using the least-bytes distribution
+	w := &kafka.Writer{
+		Addr:                   kafka.TCP("localhost:29092", "localhost:39092", "localhost:49092"),
+		Topic:                  "topic-A",
+		AllowAutoTopicCreation: true,
 	}
 
-	conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	_, err = conn.WriteMessages(
-		kafka.Message{Value: []byte("one!")},
-		kafka.Message{Value: []byte("two!")},
-		kafka.Message{Value: []byte("three!")},
+	err := w.WriteMessages(context.Background(),
+		kafka.Message{
+			Key:   []byte("Key-A"),
+			Value: []byte("Hello World!"),
+		},
+		kafka.Message{
+			Key:   []byte("Key-B"),
+			Value: []byte("One!"),
+		},
+		kafka.Message{
+			Key:   []byte("Key-C"),
+			Value: []byte("Two!"),
+		},
 	)
 	if err != nil {
-		logger.Fatal("failed to write messages:", err)
+		log.Fatal("failed to write messages:", err)
 	}
 
-	if err := conn.Close(); err != nil {
-		logger.Fatal("failed to close writer:", err)
+	if err := w.Close(); err != nil {
+		log.Fatal("failed to close writer:", err)
 	}
 }
