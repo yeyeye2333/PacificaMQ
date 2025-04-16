@@ -12,3 +12,8 @@ message PartitionStatus{
 message SubList{
     repeated string SubTopics = 1;
 }
+
+message OwnPartitions{
+    repeated string TopicName = 1;
+    repeated int32  PartitionNum=2;
+}

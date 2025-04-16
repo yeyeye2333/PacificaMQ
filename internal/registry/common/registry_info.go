@@ -6,17 +6,24 @@ import (
 
 type PartitionStatus = registry_info.PartitionStatus
 type SubList = registry_info.SubList
+type OwnPartitions = registry_info.OwnPartitions
+
+type BrokerInfo struct {
+	Address       string
+	OldPartitions *OwnPartitions
+	NewPartitions *OwnPartitions
+}
 
 type PartitionInfo struct {
 	TopicName   string
 	PartitionID int32
-	Status      PartitionStatus
+	Status      *PartitionStatus
 }
 
 type ConsumerInfo struct {
 	GroupID         string
 	ConsumerAddress string
-	SubList         SubList
+	SubList         *SubList
 }
 
 type ConsumerLeader struct {

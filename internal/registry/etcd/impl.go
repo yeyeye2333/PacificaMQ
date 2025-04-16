@@ -4,23 +4,23 @@ import (
 	"context"
 	"sync"
 
-	"github.com/gogo/protobuf/proto"
 	"github.com/yeyeye2333/PacificaMQ/internal/extension"
 	"github.com/yeyeye2333/PacificaMQ/internal/logger"
 	"github.com/yeyeye2333/PacificaMQ/internal/registry/common"
 	"github.com/yeyeye2333/PacificaMQ/pkg/conv"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"google.golang.org/protobuf/proto"
 )
 
 func init() {
-	extension.SetRegistry("etcd", NewConfigCenter)
+	extension.SetRegistry("etcd", NewRegistry)
 }
 
 const (
 	Sep = "/"
 )
 
-var NewConfigCenter extension.RegistryFactory = func(opts common.InternalOptions) (common.Registry, error) {
+var NewRegistry extension.RegistryFactory = func(opts common.InternalOptions) (common.Registry, error) {
 	registry := &etcdRegistry{InternalOptions: opts}
 
 	var rootPath string
@@ -30,7 +30,8 @@ var NewConfigCenter extension.RegistryFactory = func(opts common.InternalOptions
 		rootPath = registry.NameSpace + Sep
 	}
 	registry.rootPath = rootPath
-	registry.partitionPrefix = rootPath + "broker" + Sep
+	registry.brokerPrefix = rootPath + "broker" + Sep + "ids" + Sep
+	registry.partitionPrefix = rootPath + "broker" + Sep + "topics" + Sep
 	registry.consumerPrefix = rootPath + "consumers" + Sep
 	logger.Debug("etcd registry start with root path: %s, partition prefix: %s, consumer prefix: %s",
 		rootPath, registry.partitionPrefix, registry.consumerPrefix)
@@ -61,6 +62,7 @@ var NewConfigCenter extension.RegistryFactory = func(opts common.InternalOptions
 type etcdRegistry struct {
 	common.InternalOptions
 	rootPath        string
+	brokerPrefix    string
 	partitionPrefix string
 	consumerPrefix  string
 
@@ -102,7 +104,10 @@ func (r *etcdRegistry) leaseHeartBeat(ctx context.Context) {
 					select {
 					case <-ctx.Done():
 						return
-					case <-keepAliveCh:
+					case _, ok := <-keepAliveCh:
+						if !ok {
+							break
+						}
 						continue
 					}
 				}
@@ -112,23 +117,23 @@ func (r *etcdRegistry) leaseHeartBeat(ctx context.Context) {
 	}
 }
 
-// 接受值类型
+// 接受指针类型
 func (r *etcdRegistry) Register(node interface{}) error {
-	isLease := true
+	isLease := false
 	var key, value string
 	var data []byte
 	var err error
 
 	switch v := node.(type) {
-	case common.PartitionInfo:
-		isLease = false
-
+	case *common.PartitionInfo:
 		key = r.partitionPrefix + v.TopicName + Sep + string(conv.Int32ToBytes(v.PartitionID))
-		data, err = proto.Marshal(&v.Status)
+		data, err = proto.Marshal(v.Status)
 
-	case common.ConsumerInfo:
+	case *common.ConsumerInfo:
+		isLease = true
+
 		key = r.consumerPrefix + v.GroupID + Sep + "ids" + Sep + v.ConsumerAddress
-		data, err = proto.Marshal(&v.SubList)
+		data, err = proto.Marshal(v.SubList)
 
 	default:
 		return common.ErrNotSupport
@@ -156,21 +161,29 @@ func (r *etcdRegistry) Register(node interface{}) error {
 	return nil
 }
 
-// 接受值类型
+// 接受指针类型
 func (r *etcdRegistry) UnRegister(node interface{}) error {
+	isLease := false
 	var key string
 	switch v := node.(type) {
-	case common.PartitionInfo:
+	case *common.PartitionInfo:
 		key = r.partitionPrefix + v.TopicName + Sep + string(conv.Int32ToBytes(v.PartitionID))
 
-	case common.ConsumerInfo:
-		key = r.consumerPrefix + v.GroupID + Sep + v.ConsumerAddress
-
+	case *common.ConsumerInfo:
+		isLease = true
+		key = r.consumerPrefix + v.GroupID + Sep + "ids" + Sep + v.ConsumerAddress
 	}
 
+	if isLease {
+		r.leaseLock.Lock()
+		defer r.leaseLock.Unlock()
+	}
 	_, err := r.kv.Delete(r.ctx, key)
 	if err != nil {
 		return err
+	}
+	if isLease {
+		delete(r.leaseKeys, key)
 	}
 	return nil
 }
@@ -197,8 +210,61 @@ func (r *etcdRegistry) UnSubConsumerGroup(groupID string) {
 	r.deleteSub(key)
 }
 
-func (r *etcdRegistry) GetConsumerLeader(me common.ConsumerLeader) error {
+func (r *etcdRegistry) ChangeBroker(brokerInfo *common.BrokerInfo) error {
+	key := r.brokerPrefix + brokerInfo.Address
+	oldValue, err := proto.Marshal(brokerInfo.OldPartitions)
+	if err != nil {
+		return err
+	}
+	newValue, err := proto.Marshal(brokerInfo.NewPartitions)
+	if err != nil {
+		return err
+	}
+
+	realOp := []clientv3.Op{}
+	if len(brokerInfo.NewPartitions.TopicName) == 0 {
+		realOp = append(realOp, clientv3.OpDelete(key))
+	} else {
+		realOp = append(realOp, clientv3.OpPut(key, string(newValue)))
+	}
+
+	responses, err := r.kv.Txn(r.ctx).If(
+		clientv3.Compare(clientv3.CreateRevision(key), "!=", 0),
+	).Then(
+		clientv3.OpTxn(
+			[]clientv3.Cmp{
+				clientv3.Compare(clientv3.Value(key), "=", string(oldValue)),
+			},
+			realOp,
+			[]clientv3.Op{},
+		),
+	).Else(
+		realOp...,
+	).Commit()
+
+	if err != nil {
+		return err
+	}
+	if responses.Succeeded && !responses.Responses[0].GetResponseTxn().Succeeded {
+		return common.ErrBrokerBehind
+	}
+	return nil
+}
+
+func (r *etcdRegistry) SubBroker(broker string, listener common.Listener) error {
+	key := r.brokerPrefix + broker
+
+	return r.createSub(key, listener)
+}
+
+func (r *etcdRegistry) UnSubBroker(broker string) {
+	key := r.brokerPrefix + broker
+	r.deleteSub(key)
+}
+
+func (r *etcdRegistry) GetConsumerLeader(me *common.ConsumerLeader) error {
 	key := r.consumerPrefix + me.GroupID + Sep + "leader"
+
 	responses, err := r.kv.Txn(r.ctx).If(
 		clientv3.Compare(clientv3.CreateRevision(key), "!=", 0),
 	).Then(
@@ -231,7 +297,7 @@ func (r *etcdRegistry) Close() error {
 }
 
 func (r *etcdRegistry) createSub(key string, listener common.Listener) error {
-	lis := newListener(listener, r.rootPath, r.partitionPrefix, r.consumerPrefix)
+	lis := newListener(listener, r.rootPath, r.brokerPrefix, r.partitionPrefix, r.consumerPrefix)
 	getResp, err := r.kv.Get(r.ctx, key, clientv3.WithPrefix())
 	if err != nil {
 		return err

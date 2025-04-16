@@ -8,7 +8,7 @@ import (
 
 func init() {
 	//默认使用zap
-	default_logger, err := NewLogger()
+	default_logger, err := NewLogger(common.NewOptions())
 	if err != nil {
 		panic(err)
 	}
@@ -17,9 +17,8 @@ func init() {
 
 var logger common.Logger
 
-func NewLogger(opts ...common.Option) (common.Logger, error) {
-	options := common.NewOptions(opts...)
-	return extension.GetLogger(options.Driver, options.Internal)
+func NewLogger(opts *common.Options) (common.Logger, error) {
+	return extension.GetLogger(opts.Driver, opts.Internal)
 }
 
 func SetLogger(log common.Logger) {

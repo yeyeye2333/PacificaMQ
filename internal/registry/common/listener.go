@@ -7,7 +7,10 @@ type Listener interface {
 type EventType int
 
 const (
-	PutPartition EventType = iota
+	PutBroker EventType = iota
+	DelBroker
+
+	PutPartition
 	DelPartition
 
 	PutConsumerGroup

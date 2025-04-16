@@ -114,7 +114,7 @@ func (cc *etcdConfigCenter) GetConfig() (*common.ClusterConfig, error) {
 
 func (cc *etcdConfigCenter) WatchConfig(configWatcher common.ConfigWatcher) {
 	go func() {
-		watchCh := cc.watcher.Watch(cc.ctx, cc.rootPath, clientv3.WithPrefix())
+		watchCh := cc.watcher.Watch(clientv3.WithRequireLeader(cc.ctx), cc.rootPath, clientv3.WithPrefix())
 		for response := range watchCh {
 			for _, event := range response.Events {
 				cc.parser.parse(event)
