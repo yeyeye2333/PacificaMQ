@@ -249,19 +249,20 @@ func (db *DB) GetMessage(beginIndex uint64, maxBytes uint32) ([]*storage_info.Re
 	return records, nil
 }
 
-func (db *DB) GetProducerID(id uint64) (*storage_info.ProducerID, error) {
+func (db *DB) GetProducerID(id uint64) (uint64, error) {
 	value, err := db.db.Get(db.ro, append([]byte(MetaProducerIDPrefix), conv.Uint64ToBytes(id)...))
 	defer value.Free()
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 	producerID := &storage_info.ProducerID{}
-	err = proto.Unmarshal(value.Data(), producerID)
-	if err != nil {
-		return nil, err
+	if len(value.Data()) > 0 {
+		err = proto.Unmarshal(value.Data(), producerID)
+		if err != nil {
+			return 0, err
+		}
 	}
-	producerID.ID = &id
-	return producerID, nil
+	return producerID.GetID(), nil
 }
 
 func (db *DB) GetLastPacificaIndex() (uint64, error) {
@@ -270,27 +271,43 @@ func (db *DB) GetLastPacificaIndex() (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
+	if len(value.Data()) == 0 {
+		return 0, nil
+	}
 	return conv.BytesToUint64(value.Data()), nil
 }
 
-func (db *DB) CommitIndex(CommitIndex uint64) error {
-	err := db.db.Put(db.wo, []byte(MetaConsumedIndex), conv.Uint64ToBytes(CommitIndex))
+func (db *DB) CommitIndex(Index *storage_info.ConsumerCommitIndex) error {
+	groupID := Index.GetGroupID()
+	Index.GroupID = nil
+	now := time.Now().Unix()
+	Index.Timestamp = &now
+	value, err := proto.Marshal(Index)
+	if err != nil {
+		return err
+	}
+
+	err = db.db.Put(db.wo, append([]byte(MetaConsumedIndex), []byte(groupID)...), value)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func (db *DB) GetCommitedIndex() uint64 {
-	value, err := db.db.Get(db.ro, []byte(MetaConsumedIndex))
+func (db *DB) GetCommitedIndex(GroupID string) uint64 {
+	value, err := db.db.Get(db.ro, append([]byte(MetaConsumedIndex), []byte(GroupID)...))
 	defer value.Free()
 	if err != nil {
 		return 0
 	}
-	if len(value.Data()) == 0 {
-		return 0
+	Index := &storage_info.ConsumerCommitIndex{}
+	if len(value.Data()) > 0 {
+		err = proto.Unmarshal(value.Data(), Index)
+		if err != nil {
+			return 0
+		}
 	}
-	return conv.BytesToUint64(value.Data())
+	return Index.GetCommitIndex()
 }
 
 func (db *DB) Close() {

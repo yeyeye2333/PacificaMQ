@@ -14,6 +14,11 @@ message ProducerID{
     optional int64 Timestamp = 3;
 }
 
+message ConsumerCommitIndex{
+    optional string GroupID = 1;
+    optional uint64 CommitIndex = 2;
+    optional int64 Timestamp = 3;
+}
 
 message ReplicativeData{
     repeated bytes Data = 1;
