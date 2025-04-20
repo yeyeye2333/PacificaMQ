@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -64,7 +65,7 @@ func NewStorage(ops Options) (storage Storage, err error) {
 	}
 
 	db.appendCh = make(chan struct{}, 1)
-	db.appendQueue = make([]appendTerm, 0, 20)
+	db.appendQueue = make([]appendEntry, 0, 10)
 	go func() {
 		timer := time.NewTimer(time.Millisecond * time.Duration(db.maxWaitPerBatch))
 		wb := grocksdb.NewWriteBatch()
@@ -89,13 +90,13 @@ func NewStorage(ops Options) (storage Storage, err error) {
 			case <-timer.C:
 			}
 
-			getTerms := func() []appendTerm {
+			getEntrys := func() []appendEntry {
 				bytes := uint64(0)
-				terms := []appendTerm{}
+				entrys := []appendEntry{}
 				db.appendMu.Lock()
 				defer db.appendMu.Unlock()
 				for i := range db.appendQueue {
-					terms = append(terms, db.appendQueue[i])
+					entrys = append(entrys, db.appendQueue[i])
 					for _, data := range db.appendQueue[i].data {
 						bytes += uint64(len(data))
 					}
@@ -105,44 +106,48 @@ func NewStorage(ops Options) (storage Storage, err error) {
 					}
 				}
 				db.appendBytes -= bytes
-				db.appendQueue = db.appendQueue[len(terms):]
+				db.appendQueue = db.appendQueue[len(entrys):]
 				if len(db.appendQueue) == 0 && cap(db.appendQueue) == 0 {
-					db.appendQueue = make([]appendTerm, 0, 20)
+					db.appendQueue = make([]appendEntry, 0, 20)
 				}
-				return terms
+				return entrys
 			}
 			for {
-				terms := getTerms()
-				if len(terms) == 0 {
+				entrys := getEntrys()
+				if len(entrys) == 0 {
 					break
 				}
 				var indexs []uint64
 				now := time.Now().Unix()
-				for termIndex := range terms {
+				for termIndex := range entrys {
 					wb.SetSavePoint()
 					indexs = append(indexs, nextIndex)
 
 					nextTerm := false
-					for dataIndex := range terms[termIndex].data {
+					oldIndex := nextIndex
+					for dataIndex := range entrys[termIndex].data {
 						record := &storage_info.Record{
-							Data: terms[termIndex].data[dataIndex],
+							Data: entrys[termIndex].data[dataIndex],
 						}
 						recordData, err := proto.Marshal(record)
 						if err != nil {
 							logger.Errorf("proto marshal record failed: %v", err)
 							wb.RollbackToSavePoint()
 							indexs[len(indexs)-1] = 0
+							nextIndex = oldIndex
+							nextTerm = true
 							break
 						}
 						wb.PutCF(db.cfHandles[MsgCfIndex], conv.Uint64ToBytes(nextIndex), recordData)
 						nextIndex++
 					}
 					if nextTerm {
+						nextTerm = false
 						continue
 					}
 
 					producerID := &storage_info.ProducerID{
-						Sequence:  &terms[termIndex].producerSeq,
+						Sequence:  &entrys[termIndex].producerSeq,
 						Timestamp: &now,
 					}
 					producerIDData, err := proto.Marshal(producerID)
@@ -150,11 +155,12 @@ func NewStorage(ops Options) (storage Storage, err error) {
 						logger.Errorf("proto marshal producerID failed: %v", err)
 						wb.RollbackToSavePoint()
 						indexs[len(indexs)-1] = 0
+						nextIndex = oldIndex
 						continue
 					}
-					wb.PutCF(db.cfHandles[MetaCfIndex], append([]byte(MetaProducerIDPrefix), conv.Uint64ToBytes(terms[termIndex].producerID)...), producerIDData)
+					wb.PutCF(db.cfHandles[MetaCfIndex], append([]byte(MetaProducerIDPrefix), conv.Uint64ToBytes(entrys[termIndex].producerID)...), producerIDData)
 				}
-				wb.PutCF(db.cfHandles[MetaCfIndex], []byte(MetaLastPacificaIndex), conv.Uint64ToBytes(terms[len(terms)-1].LastPacificaIndex))
+				wb.PutCF(db.cfHandles[MetaCfIndex], []byte(MetaLastPacificaIndex), conv.Uint64ToBytes(entrys[len(entrys)-1].LastPacificaIndex))
 				if err := db.db.Write(db.wo, wb); err != nil {
 					logger.Errorf("write to db failed: %v", err)
 					for i := range indexs {
@@ -164,7 +170,7 @@ func NewStorage(ops Options) (storage Storage, err error) {
 				wb.Clear()
 
 				for i := range indexs {
-					terms[i].indexCh <- indexs[i]
+					entrys[i].indexCh <- indexs[i]
 				}
 			}
 
@@ -174,13 +180,14 @@ func NewStorage(ops Options) (storage Storage, err error) {
 	return db, nil
 }
 
-type appendTerm struct {
+type appendEntry struct {
 	data              [][]byte
 	producerID        uint64
 	producerSeq       uint64
 	LastPacificaIndex uint64
 	indexCh           chan uint64
 }
+
 type DB struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -195,21 +202,21 @@ type DB struct {
 
 	appendCh    chan struct{}
 	appendMu    sync.Mutex
-	appendQueue []appendTerm
+	appendQueue []appendEntry
 	appendBytes uint64
 }
 
-func (db *DB) AppendMessages(msgs *storage_info.ReplicativeData, producerID *storage_info.ProducerID, LastPacificaIndex uint64) (uint64, error) {
-	appendIndexCh := make(chan uint64)
+func (db *DB) AppendMessages(msgs [][]byte, producerID *storage_info.ProducerID, LastPacificaIndex uint64) (uint64, error) {
+	appendIndexCh := make(chan uint64, 1)
 	db.appendMu.Lock()
-	db.appendQueue = append(db.appendQueue, appendTerm{
-		data:              msgs.Data,
+	db.appendQueue = append(db.appendQueue, appendEntry{
+		data:              msgs,
 		producerID:        producerID.GetID(),
 		producerSeq:       producerID.GetSequence(),
 		LastPacificaIndex: LastPacificaIndex,
 		indexCh:           appendIndexCh,
 	})
-	for _, data := range msgs.Data {
+	for _, data := range msgs {
 		db.appendBytes += uint64(len(data))
 	}
 	if db.appendBytes >= db.minBytesPerBatch {
@@ -238,7 +245,10 @@ func (db *DB) GetMessage(beginIndex uint64, maxBytes uint32) ([]*storage_info.Re
 		key := it.Key()
 		value := it.Value()
 		record := &storage_info.Record{}
-		proto.Unmarshal(value.Data(), record)
+		err := proto.Unmarshal(value.Data(), record)
+		if err != nil {
+			logger.Errorf("proto unmarshal record failed: %v", err)
+		}
 		index := conv.BytesToUint64(key.Data())
 		record.Index = &index
 		records = append(records, record)
@@ -249,20 +259,30 @@ func (db *DB) GetMessage(beginIndex uint64, maxBytes uint32) ([]*storage_info.Re
 	return records, nil
 }
 
-func (db *DB) GetProducerID(id uint64) (uint64, error) {
-	value, err := db.db.Get(db.ro, append([]byte(MetaProducerIDPrefix), conv.Uint64ToBytes(id)...))
-	defer value.Free()
-	if err != nil {
-		return 0, err
-	}
-	producerID := &storage_info.ProducerID{}
-	if len(value.Data()) > 0 {
-		err = proto.Unmarshal(value.Data(), producerID)
-		if err != nil {
-			return 0, err
+func (db *DB) GetProducerIDs() (map[uint64]uint64, error) {
+	it := db.db.NewIteratorCF(db.ro, db.cfHandles[MetaCfIndex])
+	defer it.Close()
+	producerID2Seq := make(map[uint64]uint64)
+	for it.Seek([]byte(MetaProducerIDPrefix)); it.Valid(); it.Next() {
+		key := it.Key()
+		value := it.Value()
+		if strings.HasPrefix(string(key.Data()), MetaProducerIDPrefix) == false {
+			key.Free()
+			value.Free()
+			break
 		}
+		producerID := &storage_info.ProducerID{}
+		err := proto.Unmarshal(value.Data(), producerID)
+		if err != nil {
+			logger.Errorf("proto unmarshal producerID failed: %v", err)
+		}
+		ID := conv.BytesToUint64(key.Data()[len(MetaProducerIDPrefix):])
+		Seq := producerID.GetSequence()
+		producerID2Seq[ID] = Seq
+		key.Free()
+		value.Free()
 	}
-	return producerID.GetID(), nil
+	return producerID2Seq, nil
 }
 
 func (db *DB) GetLastPacificaIndex() (uint64, error) {

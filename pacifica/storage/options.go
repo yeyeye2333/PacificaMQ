@@ -5,16 +5,12 @@ import (
 	"github.com/yeyeye2333/PacificaMQ/pkg/defaults"
 )
 
-// 主要用于defaultCf
 type Options struct {
 	Path string `default:"-"`
 
 	Options        *grocksdb.Options                `default:"-"`
 	TableOptions   *grocksdb.BlockBasedTableOptions `default:"-"`
 	BlockCacheSize uint64                           `default:"10000000"` // 10MB左右
-
-	FifoOPtions       *grocksdb.FIFOCompactionOptions `default:"-"`
-	MaxTableFilesSize uint64                          `default:"1000000000"` // 1GB左右
 
 	ReadOptions  *grocksdb.ReadOptions  `default:"-"`
 	WriteOptions *grocksdb.WriteOptions `default:"-"`
@@ -29,35 +25,32 @@ func defaultOptions() *Options {
 
 	options.Options = grocksdb.NewDefaultOptions()
 	options.TableOptions = grocksdb.NewDefaultBlockBasedTableOptions()
-	options.FifoOPtions = grocksdb.NewDefaultFIFOCompactionOptions()
 	options.ReadOptions = grocksdb.NewDefaultReadOptions()
 	options.WriteOptions = grocksdb.NewDefaultWriteOptions()
 
 	options.Options.SetCreateIfMissing(true)
 	options.Options.SetCreateIfMissingColumnFamilies(true)
-	options.Options.SetCompactionStyle(2)
 
-	opts := []Option{WithDisableWAL(true),
-		WithWriteBufferSize(16 << 20),
-		WithMaxWriteBufferNumber(8),
+	opts := []Option{WithSync(false),
+		WithNumLevels(2),
+		WithWriteBufferSize(32 << 20),
+		WithMaxWriteBufferNumber(4),
 		WithMinWriteBufferNumberToMerge(1),
 		WithMaxBackgroundJobs(2),
-		WithEnabledPipelinedWrite(false),
-		WithMemManagerSize(100 << 20),
+		WithMemManagerSize(300 << 20),
 	}
 	for _, opt := range opts {
 		opt(options)
 	}
-
 	return options
 }
 
 func NewOptions(opts ...Option) *Options {
-	Options := defaultOptions()
+	options := defaultOptions()
 	for _, opt := range opts {
-		opt(Options)
+		opt(options)
 	}
-	return Options
+	return options
 }
 
 type Option func(*Options)
@@ -69,21 +62,21 @@ func WithPath(path string) Option {
 	}
 }
 
-// FifoCompaction 相关配置
-func WithMaxTableFilesSize(size uint64) Option {
-	return func(o *Options) {
-		o.FifoOPtions.SetMaxTableFilesSize(size)
-	}
-}
-
 // WriteOptions 相关配置
-func WithDisableWAL(enabled bool) Option {
+func WithSync(isSync bool) Option {
 	return func(o *Options) {
-		o.WriteOptions.DisableWAL(enabled)
+		o.WriteOptions.SetSync(isSync)
 	}
 }
 
 // Options 相关配置
+// level层数
+func WithNumLevels(numLevels int) Option {
+	return func(o *Options) {
+		o.Options.SetNumLevels(numLevels)
+	}
+}
+
 // memTable/L0层 相关
 func WithWriteBufferSize(size uint64) Option {
 	return func(o *Options) {
@@ -107,13 +100,6 @@ func WithMinWriteBufferNumberToMerge(number int) Option {
 func WithMaxBackgroundJobs(number int) Option {
 	return func(o *Options) {
 		o.Options.SetMaxBackgroundJobs(number)
-	}
-}
-
-// 流水线
-func WithEnabledPipelinedWrite(enabled bool) Option {
-	return func(o *Options) {
-		o.Options.SetEnablePipelinedWrite(enabled)
 	}
 }
 

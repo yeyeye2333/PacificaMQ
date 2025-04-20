@@ -15,18 +15,18 @@ func TestBasicSetAndGet(t *testing.T) {
 	defer s.Close()
 
 	appendTests := []struct {
-		msg               *storage_info.ReplicativeData
+		msg               [][]byte
 		producerID        *storage_info.ProducerID
 		lastPacificaIndex uint64
 		wantedIndex       uint64
 	}{
 		{
-			msg:               &storage_info.ReplicativeData{Data: [][]byte{[]byte("hello"), []byte("world")}},
+			msg:               [][]byte{[]byte("hello"), []byte("world")},
 			producerID:        getProducerID(1, 1),
 			lastPacificaIndex: 1,
 			wantedIndex:       1,
 		}, {
-			msg:               &storage_info.ReplicativeData{Data: [][]byte{[]byte("hello"), []byte("world")}},
+			msg:               [][]byte{[]byte("hello"), []byte("world")},
 			producerID:        getProducerID(1, 2),
 			lastPacificaIndex: 1,
 			wantedIndex:       3,
@@ -50,6 +50,10 @@ func TestBasicSetAndGet(t *testing.T) {
 	}
 	if bytes.Equal(msgs[0].GetData(), []byte("hello")) != true {
 		t.Errorf("data not equal,msg:%v wanted:%v", msgs[0].GetData(), []byte("hello"))
+	}
+	m, _ := s.GetProducerIDs()
+	if v, ok := m[1]; !ok || v != 2 {
+		t.Error("producer id not equal")
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 )
 
 func (node *Node) leaderWork(ctx context.Context) {
+	atomic.StoreInt32(&node.isLeasePeriod, 1)
 	entry, err := node.storage.LoadMax()
 	if err != nil {
 		node.Errorf("load max entry failed: %v", err)
@@ -117,7 +118,13 @@ func (node *Node) leaderWork(ctx context.Context) {
 				newVersion++
 				if len(needAddFollowers) > 0 {
 					for _, nodeID := range needAddFollowers {
-						node.config.configCenter.AddFollower(nodeID, newVersion)
+						err = node.config.configCenter.AddFollower(nodeID, newVersion)
+						if err != nil {
+							node.Errorf("add follower failed: %v", err)
+							if err == ErrVersionBehind {
+								return
+							}
+						}
 					}
 				}
 			} else {
@@ -127,6 +134,21 @@ func (node *Node) leaderWork(ctx context.Context) {
 			createFunc(nodeID, Learner)
 		case nodeID := <-node.removeFollowerCh:
 			deleteFunc(nodeID)
+			leader, newVersion := node.config.GetLeader()
+			if leader != node.me {
+				node.Errorf("leader is not me, leader:%s, me:%s", leader, node.me)
+				return
+			}
+			newVersion++
+			err = node.config.configCenter.RemoveFollower(nodeID, newVersion)
+			if err != nil {
+				node.Errorf("add follower failed: %v", err)
+				if err == ErrVersionBehind {
+					return
+				}
+			} else {
+				atomic.AddInt32(&node.isLeasePeriod, 1)
+			}
 		case nodeID := <-node.addFollowerCh:
 			deleteFunc(nodeID)
 			createFunc(nodeID, Follower)
@@ -145,58 +167,39 @@ func (node *Node) slaveSender(ctx context.Context, status Status, nodeID NodeID,
 	cli := proto.NewReplicationClient(conn)
 	defer conn.Close()
 
+	//设置定时心跳和lease period判断是否需要删除follower
 	heartbeat := time.NewTimer(node.leaderPeriod / 3)
+	node.leaderMu.Lock()
+	timer, ok := node.leaderTimers[nodeID]
+	if ok {
+		timer.Reset(node.leaderPeriod)
+	} else {
+		node.Errorf("leader timer not found, nodeID:%s", nodeID)
+	}
+	node.leaderMu.Unlock()
 	go func() {
-		node.leaderMu.Lock()
-		timer, ok := node.leaderTimers[nodeID]
-		if ok {
-			timer.Reset(node.leaderPeriod)
-		} else {
-			node.Errorf("leader timer not found, nodeID:%s", nodeID)
-		}
-		node.leaderMu.Unlock()
 		for {
-			if ok {
-				select {
-				case <-ctx.Done():
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+				atomic.StoreInt32(&node.isLeasePeriod, 0)
+				node.removeFollowerCh <- nodeID
+				return
+			case <-heartbeat.C:
+				leader, version := node.config.GetLeader()
+				if leader != me {
+					node.Errorf("leader is not me, leader:%s, me:%d", leader, me)
 					return
-				case <-timer.C:
-					node.removeFollowerCh <- nodeID
-					return
-				case <-heartbeat.C:
-					leader, version := node.config.GetLeader()
-					if leader != me {
-						node.Errorf("leader is not me, leader:%s, me:%d", leader, me)
-						return
-					}
-					args := &proto.AppendEntriesArgs{}
-					node.mu.RLock()
-					args.LeaderCommit = &node.commitIndex
-					node.mu.RUnlock()
-					args.LeaderId = &me
-					args.Version = &version
-					heartbeat.Reset(node.leaderPeriod / 3)
-					node.sendAppendEntries(ctx, cli, args)
 				}
-			} else {
-				select {
-				case <-ctx.Done():
-					return
-				case <-heartbeat.C:
-					leader, version := node.config.GetLeader()
-					if leader != me {
-						node.Errorf("leader is not me, leader:%s, me:%d", leader, me)
-						return
-					}
-					args := &proto.AppendEntriesArgs{}
-					node.mu.RLock()
-					args.LeaderCommit = &node.commitIndex
-					node.mu.RUnlock()
-					args.LeaderId = &me
-					args.Version = &version
-					heartbeat.Reset(node.leaderPeriod / 3)
-					node.sendAppendEntries(ctx, cli, args)
-				}
+				args := &proto.AppendEntriesArgs{}
+				node.mu.RLock()
+				args.LeaderCommit = &node.commitIndex
+				node.mu.RUnlock()
+				args.LeaderId = &me
+				args.Version = &version
+				heartbeat.Reset(node.leaderPeriod / 3)
+				node.sendAppendEntries(ctx, cli, args)
 			}
 		}
 	}()
@@ -243,6 +246,9 @@ func (node *Node) slaveSender(ctx context.Context, status Status, nodeID NodeID,
 				args.PrevLogVersion = entries[0].Version
 				args.Entries = entries[1:]
 				heartbeat.Reset(node.leaderPeriod / 3)
+				if ok {
+					timer.Reset(node.leaderPeriod)
+				}
 				reply, err := node.sendAppendEntries(ctx, cli, args)
 				if err == nil {
 					nextIndex = nextIndex + num
@@ -278,7 +284,10 @@ func (node *Node) slaveSender(ctx context.Context, status Status, nodeID NodeID,
 				}
 				args.LastIncludedEntry = entry
 				args.Data = node.snapshoter.Read()
-				heartbeat.Reset(node.leaderPeriod / 3)
+				if ok {
+					heartbeat.Reset(node.leaderPeriod / 3)
+				}
+				timer.Reset(node.leaderPeriod)
 				_, err = node.sendInstallSnapshot(ctx, cli, args)
 				if err == nil {
 					nextIndex = node.snapLastIndex + 1
@@ -328,7 +337,7 @@ func (node *Node) followerWork(ctx context.Context) {
 			newVersion++
 			err := node.config.configCenter.ReplaceLeader(node.me, newVersion)
 			if err != nil {
-				node.Warnf("replace leader failed: %v", err)
+				node.Errorf("replace leader failed: %v", err)
 			}
 			node.config.ChangeLeader(node.me, newVersion) // config内部回调
 		case <-ctx.Done():

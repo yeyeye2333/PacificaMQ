@@ -6,6 +6,9 @@ option go_package = "api/broker_rpc";
 service Broker {
     rpc PushMessages(stream PushMessagesRequest) returns (stream PushMessagesResponse) {}
     rpc PullMessages(PullMessagesRequest) returns (stream PullMessagesResponse) {}
+    rpc CommitIndex(CommitIndexRequest) returns (CommitIndexResponse) {}
+    rpc GetCommitIndex(GetCommitIndexRequest) returns (GetCommitIndexResponse) {}
+    rpc InitProducerID(InitProducerIDRequest) returns (InitProducerIDResponse) {}
 }
 
 enum RetCode {
@@ -18,14 +21,14 @@ message PushMessagesRequest {
         message Partition{
             optional int32 PartitionID = 1;
             repeated bytes Datas = 2;
+            optional uint64 ProducerID = 3;
+            optional uint64 SequenceNumber = 4;
         }
         optional string TopicName = 1;
         repeated Partition Partitions = 2;
     }
-    optional uint64 ProducerID = 1;
-    optional uint64 SequenceNumber = 2;
-    optional int32 Acks = 3;
-    repeated Topic Topics = 4;
+    optional int32 Acks = 1;
+    repeated Topic Topics = 2;
 }
 
 message PushMessagesResponse {
@@ -66,4 +69,36 @@ message PullMessagesResponse {
         repeated PartitionResponses Partitions = 2;
     }
     repeated TopicResponses Topics = 1;
+}
+
+message CommitIndexRequest {
+    optional string ConsumerGroup = 1;
+    optional string TopicName = 2;
+    optional int32 PartitionID = 3;
+    optional uint64 CommitIndex = 4;
+}
+
+message CommitIndexResponse {
+    optional RetCode Ret = 1;
+}
+
+message GetCommitIndexRequest {
+    optional string ConsumerGroup = 1;
+    optional string TopicName = 2;
+    optional int32 PartitionID = 3;
+}
+
+message GetCommitIndexResponse {
+    optional RetCode Ret = 1;
+    optional uint64 CommitIndex = 2;
+}
+
+message InitProducerIDRequest {
+    optional string TopicName = 1;
+    optional int32 PartitionID = 2;
+}
+
+message InitProducerIDResponse {
+    optional RetCode Ret = 1;
+    optional uint64 ProducerID = 2;
 }

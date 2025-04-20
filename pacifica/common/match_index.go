@@ -75,6 +75,7 @@ func (m *MatchIndex) UpdateNode(node NodeItem) {
 	}
 }
 
+// 最小值变化时通知
 func (m *MatchIndex) MinCh() chan struct{} {
 	return m.minCh
 }

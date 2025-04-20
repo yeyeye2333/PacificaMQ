@@ -11,7 +11,6 @@ import (
 	proto "github.com/yeyeye2333/PacificaMQ/pacifica/api"
 	. "github.com/yeyeye2333/PacificaMQ/pacifica/common"
 	"github.com/yeyeye2333/PacificaMQ/pacifica/storage"
-	storageCM "github.com/yeyeye2333/PacificaMQ/pacifica/storage/common"
 )
 
 var (
@@ -35,7 +34,7 @@ type Node struct {
 	ctx        context.Context
 	workCancel context.CancelFunc // 被取消前可能读取变化后的version，需验证
 	// 持久性
-	storage    storageCM.Storage //存储最小值为第一条log或snapshot最后一条log
+	storage    storage.Storage //存储最小值为第一条log或snapshot最后一条log
 	snapshoter Snapshoter
 
 	// 易失性
@@ -61,8 +60,9 @@ type Node struct {
 
 	// leader
 	// isbeat
-	nextAddCh chan struct{}
-	nextIndex Index //原子修改
+	isLeasePeriod int32 //原子修改
+	nextAddCh     chan struct{}
+	nextIndex     Index //原子修改
 
 	addLearnerCh     chan NodeID
 	removeFollowerCh chan NodeID
@@ -75,45 +75,41 @@ type Node struct {
 	leaderPeriod time.Duration
 }
 
-func NewNode(ctx context.Context, me NodeID, snapshoter Snapshoter, logger logCM.Logger) (*Node, error) {
+func NewNode(ctx context.Context, me NodeID, snapshoter Snapshoter, logger logCM.Logger, followerPeriod, learnerPeriod, leaderPeriod time.Duration, maxNumsOnce Index) (*Node, error) {
 	node := &Node{
-		Logger:          logger,
-		ctx:             ctx,
-		me:              me,
-		status:          None,
-		snapLastIndex:   0,
-		snapLastVersion: 0,
-		commitIndex:     0,
-		lastApplied:     0,
+		maxNumsOnce:      maxNumsOnce,
+		Logger:           logger,
+		ctx:              ctx,
+		snapshoter:       snapshoter,
+		me:               me,
+		status:           None,
+		applyCh:          make(chan *ApplyMsg, 1),
+		commitAddCh:      make(chan struct{}, 1),
+		followerPeriod:   followerPeriod,
+		learnerPeriod:    learnerPeriod,
+		nextAddCh:        make(chan struct{}, 1),
+		addLearnerCh:     make(chan NodeID, 1),
+		removeFollowerCh: make(chan NodeID, 1),
+		addFollowerCh:    make(chan NodeID, 1),
+		leaderPeriod:     leaderPeriod,
 	}
 
-	storage, err := storage.NewStorage(storageCM.WithStorage("mock"))
+	storage, err := storage.NewStorage(storage.NewOptions())
 	if err != nil {
 		return nil, err
 	}
-	err = storage.Start()
-	if err != nil {
-		return nil, err
-	}
+
 	entry, err := storage.LoadMin()
 	if err != nil {
 		return nil, err
 	}
-	if entry != nil && entry.GetIndex() != 1 {
+	if entry != nil && entry.GetIndex() > 1 {
 		node.snapLastIndex = entry.GetIndex()
 		node.snapLastVersion = entry.GetVersion()
-	}
-	entry, err = storage.LoadMax()
-	if err != nil {
-		return nil, err
-	}
-	if entry != nil {
-		// node.commitIndex = entry.GetIndex()
 	}
 	node.storage = storage
 
 	config := &configChanger{}
-	//
 	config.SetBecomeLeader(func() { node.becomeCallBack(Leader) })
 	config.SetBecomeFollower(func() { node.becomeCallBack(Follower) })
 	config.SetBecomeLearner(func() { node.becomeCallBack(Learner) })
@@ -124,6 +120,11 @@ func NewNode(ctx context.Context, me NodeID, snapshoter Snapshoter, logger logCM
 	node.config = config
 
 	return node, nil
+}
+
+func (node *Node) isLeader() bool {
+	// 还需判断是否apply至当前任期
+	return (atomic.LoadInt32(&node.status) == Leader) && (atomic.LoadInt32(&node.isLeasePeriod) != 0)
 }
 
 func (node *Node) Snapshot(index Index) error {

@@ -1,11 +1,8 @@
 package common
 
-import (
-	"github.com/yeyeye2333/PacificaMQ/common"
-)
-
 type Registry interface {
-	common.Node
+	Close() error
+
 	Register(interface{}) error
 	UnRegister(interface{}) error
 

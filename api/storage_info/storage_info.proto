@@ -19,7 +19,3 @@ message ConsumerCommitIndex{
     optional uint64 CommitIndex = 2;
     optional int64 Timestamp = 3;
 }
-
-message ReplicativeData{
-    repeated bytes Data = 1;
-}
