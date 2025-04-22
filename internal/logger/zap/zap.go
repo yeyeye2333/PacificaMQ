@@ -71,7 +71,7 @@ var NewLogger extension.LoggerFactory = func(opts common.InternalOptions) (logge
 	var zap_logger zap_logger
 	zap_logger.lv = zap.NewAtomicLevelAt(lv)
 	zap_logger.SugaredLogger = zap.New(zapcore.NewCore(encoder, zapcore.NewMultiWriteSyncer(sync...), zap_logger.lv),
-		zap.AddCaller(), zap.AddCallerSkip(1)).Sugar()
+		zap.AddCaller(), zap.AddCallerSkip(0)).Sugar()
 	logger = &zap_logger
 	return logger, nil
 }

@@ -5,7 +5,7 @@ import (
 )
 
 type Snapshoter interface {
-	Write(Index)
-	Read() []byte
-	Install([]byte)
+	Write(Index) error
+	Read() ([]byte, error)
+	Install([]byte) error
 }

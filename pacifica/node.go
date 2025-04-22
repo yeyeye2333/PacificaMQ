@@ -3,6 +3,7 @@ package pacifica
 import (
 	"context"
 	"fmt"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -11,6 +12,7 @@ import (
 	proto "github.com/yeyeye2333/PacificaMQ/pacifica/api"
 	. "github.com/yeyeye2333/PacificaMQ/pacifica/common"
 	"github.com/yeyeye2333/PacificaMQ/pacifica/storage"
+	"google.golang.org/grpc"
 )
 
 var (
@@ -30,6 +32,7 @@ type Node struct {
 
 	proto.UnimplementedReplicationServer
 	proto.UnimplementedAddNodeServer
+	grpcServer *grpc.Server
 	logCM.Logger
 	ctx        context.Context
 	workCancel context.CancelFunc // 被取消前可能读取变化后的version，需验证
@@ -44,11 +47,11 @@ type Node struct {
 	status          Status // 状态变化：leader->learner;follower->leader;follower->learner;learner->follower // 只在work准备好后原子修改
 	applyCh         chan *ApplyMsg
 	commitAddCh     chan struct{}
+	lastApplied     Index
 	mu              sync.RWMutex //最外层锁
 	snapLastIndex   Index
 	snapLastVersion Version
 	commitIndex     Index
-	lastApplied     Index
 
 	// follower/learner
 	leaderLastIndex Index //原子修改
@@ -75,26 +78,32 @@ type Node struct {
 	leaderPeriod time.Duration
 }
 
-func NewNode(ctx context.Context, me NodeID, snapshoter Snapshoter, logger logCM.Logger, followerPeriod, learnerPeriod, leaderPeriod time.Duration, maxNumsOnce Index) (*Node, error) {
+func NewNode(ctx context.Context, options *Options) (*Node, error) {
+	if options.Snapshot == nil {
+		return nil, fmt.Errorf("snapshoter is nil")
+	}
 	node := &Node{
-		maxNumsOnce:      maxNumsOnce,
-		Logger:           logger,
+		maxNumsOnce:      options.MaxNumsOnce,
+		Logger:           options.Logger,
 		ctx:              ctx,
-		snapshoter:       snapshoter,
-		me:               me,
+		workCancel:       func() {},
+		snapshoter:       options.Snapshot,
+		me:               options.Address,
 		status:           None,
 		applyCh:          make(chan *ApplyMsg, 1),
 		commitAddCh:      make(chan struct{}, 1),
-		followerPeriod:   followerPeriod,
-		learnerPeriod:    learnerPeriod,
+		followerPeriod:   time.Duration(options.FollowerPeriod) * time.Millisecond,
+		learnerPeriod:    time.Duration(options.LearnerPeriod) * time.Millisecond,
 		nextAddCh:        make(chan struct{}, 1),
 		addLearnerCh:     make(chan NodeID, 1),
 		removeFollowerCh: make(chan NodeID, 1),
 		addFollowerCh:    make(chan NodeID, 1),
-		leaderPeriod:     leaderPeriod,
+		leaderPeriod:     time.Duration(options.LeaderPeriod) * time.Millisecond,
 	}
+	node.Info("node address:", node.me)
 
-	storage, err := storage.NewStorage(storage.NewOptions())
+	storage, err := storage.NewStorage(options.StorageOpts)
+	node.storage = storage
 	if err != nil {
 		return nil, err
 	}
@@ -107,31 +116,61 @@ func NewNode(ctx context.Context, me NodeID, snapshoter Snapshoter, logger logCM
 		node.snapLastIndex = entry.GetIndex()
 		node.snapLastVersion = entry.GetVersion()
 	}
-	node.storage = storage
 
-	config := &configChanger{}
-	config.SetBecomeLeader(func() { node.becomeCallBack(Leader) })
-	config.SetBecomeFollower(func() { node.becomeCallBack(Follower) })
-	config.SetBecomeLearner(func() { node.becomeCallBack(Learner) })
-	err = config.Start(me)
+	lis, err := net.Listen("tcp", options.Address)
 	if err != nil {
 		return nil, err
 	}
+	node.grpcServer = grpc.NewServer()
+	proto.RegisterReplicationServer(node.grpcServer, node)
+	proto.RegisterAddNodeServer(node.grpcServer, node)
+	go node.grpcServer.Serve(lis)
+
+	config := &configChanger{}
 	node.config = config
+	config.SetBecomeLeader(func() { node.becomeCallBack(Leader) })
+	config.SetBecomeFollower(func() { node.becomeCallBack(Follower) })
+	config.SetBecomeLearner(func() { node.becomeCallBack(Learner) })
+	err = config.Start(options.Address, node.Logger, options.CcOpts)
+	if err != nil {
+		return nil, err
+	}
+
+	go node.doApply(node.ctx)
 
 	return node, nil
 }
 
-func (node *Node) isLeader() bool {
-	// 还需判断是否apply至当前任期
-	return (atomic.LoadInt32(&node.status) == Leader) && (atomic.LoadInt32(&node.isLeasePeriod) != 0)
+func (node *Node) close() error {
+	defer func() {
+		node.workCancel()
+	}()
+	node.grpcServer.Stop()
+	node.storage.Close()
+	close(node.applyCh)
+	return node.config.Close()
+}
+
+// 还需判断是否apply至当前任期
+func (node *Node) IsLeader() uint64 {
+	leader, version := node.config.GetLeader()
+	if (leader == node.me) && (atomic.LoadInt32(&node.isLeasePeriod) != 0) {
+		return version
+	}
+	return 0
 }
 
 func (node *Node) Snapshot(index Index) error {
 	if index > node.lastApplied {
 		return fmt.Errorf("snapshot index %d is greater than last applied %d", index, node.lastApplied)
 	}
-	node.snapshoter.Write(index)
+	if err := node.snapshoter.Write(index); err != nil {
+		return err
+	}
+
+	if err := node.storage.Release(uint64(1), index); err != nil {
+		node.Error("release failed: %v", err)
+	}
 	return nil
 }
 
@@ -139,26 +178,27 @@ func (node *Node) ApplyCh() <-chan *ApplyMsg {
 	return node.applyCh
 }
 
-func (node *Node) Apply(msg []byte) error {
+func (node *Node) Apply(msg []byte) (Index, Version, error) {
 	leader, version := node.config.GetLeader()
 	if leader != node.me {
-		return ErrNotLeader
+		return 0, version, ErrNotLeader
 	} else {
 		entry := &proto.Entry{}
 		index := atomic.LoadUint64(&node.nextIndex)
 		entry.Data = msg
 		entry.Index = &index
 		entry.Version = &version
+		node.Info("save entry:", entry)
 		err := node.storage.Save([]*proto.Entry{entry})
 		if err != nil {
-			return err
+			return 0, version, err
 		} else {
 			atomic.AddUint64(&node.nextIndex, 1)
 			select {
 			case node.nextAddCh <- struct{}{}:
 			default:
 			}
-			return nil
+			return entry.GetIndex(), version, nil
 		}
 	}
 }
@@ -166,38 +206,49 @@ func (node *Node) Apply(msg []byte) error {
 func (node *Node) doApply(ctx context.Context) {
 	for {
 		node.mu.Lock()
-		if node.commitIndex <= node.lastApplied {
+		if node.commitIndex > node.lastApplied {
 			node.mu.Unlock()
-		}
-		for node.commitIndex > node.lastApplied {
-			msg := &ApplyMsg{}
-			if node.lastApplied < node.snapLastIndex {
-				msg.SnapshotLastIndex = node.snapLastIndex
-				msg.SnapshotLastVersion = node.snapLastVersion
-				node.lastApplied = node.snapLastIndex
-				node.mu.Unlock()
-				//提前解锁，防止read耗时过久
-				msg.Snapshot = node.snapshoter.Read()
-			} else {
-				num := min(node.commitIndex-node.lastApplied, 10)
-				entries, err := node.storage.MoreLoad(node.lastApplied+1, num)
-				if err != nil {
+			for node.commitIndex > node.lastApplied {
+				msg := &ApplyMsg{}
+				node.mu.Lock()
+				if node.lastApplied < node.snapLastIndex {
 					node.mu.Unlock()
-					node.Errorf("load entries failed: %v", err)
-					break
+					msg.SnapshotLastIndex = node.snapLastIndex
+					msg.SnapshotLastVersion = node.snapLastVersion
+					//提前解锁，防止read耗时过久
+					snapshot, err := node.snapshoter.Read()
+					if err != nil {
+						node.Error("read snapshot failed: %v", err)
+						break
+					} else {
+						node.lastApplied = node.snapLastIndex
+						msg.Snapshot = snapshot
+					}
 				} else {
-					node.lastApplied += Index(len(entries))
+					num := min(node.commitIndex-node.lastApplied, 10)
 					node.mu.Unlock()
+					node.Info(node.lastApplied+1, num)
+					entries, err := node.storage.MoreLoad(node.lastApplied+1, num)
+					if err != nil {
+						node.Errorf("load entries failed: %v", err)
+						break
+					} else {
+						node.lastApplied += Index(len(entries))
+					}
+					node.Info(node.lastApplied, entries)
+					msg.Entries = append(msg.Entries, entries...)
 				}
-				msg.Entries = append(msg.Entries, entries...)
+				node.Info("msg:", msg)
+				node.applyCh <- msg
 			}
-			node.applyCh <- msg
+		} else {
+			node.mu.Unlock()
 		}
 
 		select {
 		case <-ctx.Done():
 			return
-		case node.commitAddCh <- struct{}{}:
+		case <-node.commitAddCh:
 		}
 	}
 }
@@ -208,12 +259,14 @@ func (node *Node) becomeCallBack(status Status) {
 	node.workCancel()
 	ctx, cancel := context.WithCancel(node.ctx)
 	node.workCancel = cancel
+	prePare := make(chan struct{})
 	switch status {
 	case Leader:
-		go node.leaderWork(ctx)
+		go node.leaderWork(ctx, prePare)
 	case Follower:
-		go node.followerWork(ctx)
+		go node.followerWork(ctx, prePare)
 	case Learner:
-		go node.learnerWork(ctx)
+		go node.learnerWork(ctx, prePare)
 	}
+	<-prePare
 }

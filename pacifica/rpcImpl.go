@@ -139,9 +139,24 @@ func (node *Node) InstallSnapshot(ctx context.Context, args *proto.InstallSnapsh
 			}
 			node.slaveMu.Unlock()
 
-			node.storage.Release(1, math.MaxUint64)
-			node.storage.Save([]*proto.Entry{entry})
-			node.snapshoter.Install(args.GetData())
+			installErr := node.snapshoter.Install(args.GetData())
+			if installErr != nil {
+				node.Errorf("install snapshot err %v", installErr)
+				err = ErrOther
+				return
+			}
+			releaseErr := node.storage.Release(1, math.MaxUint64)
+			if releaseErr != nil {
+				node.Errorf("release err %v", releaseErr)
+				err = ErrOther
+				return
+			}
+			saveErr := node.storage.Save([]*proto.Entry{entry})
+			if saveErr != nil {
+				node.Errorf("save err %v", saveErr)
+				err = ErrOther
+				return
+			}
 			node.snapLastIndex = entry.GetIndex()
 			node.snapLastVersion = entry.GetVersion()
 			node.commitIndex = entry.GetIndex()

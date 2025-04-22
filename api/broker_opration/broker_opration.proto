@@ -1,0 +1,26 @@
+syntax = "proto3";
+package broker_opration;
+
+option go_package = "api/broker_opration";
+
+message PushMessage{
+    repeated bytes Datas = 1;
+    optional uint64 ProducerID = 2;
+    optional uint64 SequenceNumber = 3;
+}
+
+message CommitIndex{
+    optional string ConsumerGroup = 1;
+    optional uint64 CommitIndex = 2;
+}
+
+message InitProducerID{
+}
+
+message BrokerOperation {
+    oneof Operation{
+        PushMessage PushMsg=1;
+        CommitIndex CommitIndex=2;
+        InitProducerID InitProducerID=3;
+    }
+}

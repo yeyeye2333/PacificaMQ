@@ -3,6 +3,7 @@ package pacifica
 import (
 	"sync"
 
+	logCM "github.com/yeyeye2333/PacificaMQ/internal/logger/common"
 	"github.com/yeyeye2333/PacificaMQ/pacifica/common"
 	"github.com/yeyeye2333/PacificaMQ/pacifica/config_center"
 	ccCM "github.com/yeyeye2333/PacificaMQ/pacifica/config_center/common"
@@ -11,6 +12,7 @@ import (
 type configChanger struct {
 	configCenter ccCM.ConfigCenter
 	me           common.NodeID
+	logCM.Logger
 	// 回调前更新完config
 	becomeLeader   func()
 	becomeFollower func()
@@ -23,6 +25,7 @@ type configChanger struct {
 }
 
 func (c *configChanger) Process(event *ccCM.WatchEvent) {
+	c.Info("process event", event)
 	c.config.ClusterConfig.Version = event.Version
 	switch event.Type {
 	case ccCM.EventAddFollower:
@@ -31,10 +34,12 @@ func (c *configChanger) Process(event *ccCM.WatchEvent) {
 			if c.becomeFollower != nil && follower == c.me {
 				func() {
 					c.mu.Lock()
-					defer c.mu.Unlock()
 					if c.latestVersion < c.config.ClusterConfig.Version {
 						c.latestVersion = c.config.ClusterConfig.Version
+						c.mu.Unlock()
 						c.becomeFollower()
+					} else {
+						c.mu.Unlock()
 					}
 				}()
 			}
@@ -45,10 +50,12 @@ func (c *configChanger) Process(event *ccCM.WatchEvent) {
 			if c.becomeLearner != nil && follower == c.me {
 				func() {
 					c.mu.Lock()
-					defer c.mu.Unlock()
 					if c.latestVersion < c.config.ClusterConfig.Version {
 						c.latestVersion = c.config.ClusterConfig.Version
+						c.mu.Unlock()
 						c.becomeLearner()
+					} else {
+						c.mu.Unlock()
 					}
 				}()
 			}
@@ -59,10 +66,11 @@ func (c *configChanger) Process(event *ccCM.WatchEvent) {
 	}
 }
 
-func (c *configChanger) Start(me common.NodeID, opts ...ccCM.Option) error {
+func (c *configChanger) Start(me common.NodeID, logger logCM.Logger, opts *ccCM.Options) error {
+	c.Logger = logger
 	c.me = me
 	c.config.Init()
-	configCenter, err := config_center.NewConfigCenter(ccCM.NewOptions(opts...))
+	configCenter, err := config_center.NewConfigCenter(opts)
 	if err != nil {
 		return err
 	}
@@ -74,10 +82,15 @@ func (c *configChanger) Start(me common.NodeID, opts ...ccCM.Option) error {
 
 	c.configCenter.WatchConfig(c)
 	config, err := c.configCenter.GetConfig()
+	c.Info("get config from config center", config)
 	if err != nil {
 		return err
 	}
-	c.ChangeLeader(config.Leader, config.Version)
+	if config.Version > 0 {
+		c.ChangeLeader(config.Leader, config.Version)
+	} else {
+		c.ChangeLeader(c.me, 1)
+	}
 	c.config.ClusterConfig = *config
 	return nil
 }
@@ -88,18 +101,21 @@ func (c *configChanger) Close() error {
 
 func (c *configChanger) ChangeLeader(newLeader common.NodeID, newVersion common.Version) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.config.Version < newVersion {
+		c.Info("change leader to ", newLeader, " version ", newVersion)
 		c.latestVersion = newVersion
 		// 回调前更新config
 		oldLeader := c.config.Leader
 		c.config.Leader = newLeader
 		c.config.Version = newVersion
+		c.mu.Unlock()
 		if c.becomeLearner != nil && oldLeader == c.me {
 			c.becomeLearner()
 		} else if c.becomeLeader != nil && c.config.Leader == c.me {
 			c.becomeLeader()
 		}
+	} else {
+		c.mu.Unlock()
 	}
 }
 

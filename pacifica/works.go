@@ -10,18 +10,16 @@ import (
 	grpc "google.golang.org/grpc"
 )
 
-func (node *Node) leaderWork(ctx context.Context) {
+func (node *Node) leaderWork(ctx context.Context, prePare chan struct{}) {
+	node.Info("leader work start")
 	atomic.StoreInt32(&node.isLeasePeriod, 1)
 	entry, err := node.storage.LoadMax()
 	if err != nil {
 		node.Errorf("load max entry failed: %v", err)
 		return
 	}
-	if entry != nil {
-		atomic.StoreUint64(&node.nextIndex, entry.GetIndex()+1)
-	} else {
-		atomic.StoreUint64(&node.nextIndex, 1)
-	}
+	atomic.StoreUint64(&node.nextIndex, entry.GetIndex()+1)
+
 	node.leaderMu.Lock()
 	node.leaderTimers = make(map[NodeID]*time.Timer)
 	node.followerMatchs.Init()
@@ -75,6 +73,8 @@ func (node *Node) leaderWork(ctx context.Context) {
 	needAddFollowers := make([]NodeID, 0)
 
 	atomic.StoreInt32(&node.status, Leader)
+	prePare <- struct{}{}
+	close(prePare)
 	for {
 		select {
 		case <-ctx.Done():
@@ -83,7 +83,7 @@ func (node *Node) leaderWork(ctx context.Context) {
 			if len(nextIndexChMap) == 0 {
 				//单节点
 				node.mu.Lock()
-				node.commitIndex = atomic.LoadUint64(&node.nextIndex)
+				node.commitIndex = atomic.LoadUint64(&node.nextIndex) - 1
 				node.mu.Unlock()
 				select {
 				case node.commitAddCh <- struct{}{}:
@@ -246,10 +246,10 @@ func (node *Node) slaveSender(ctx context.Context, status Status, nodeID NodeID,
 				args.PrevLogVersion = entries[0].Version
 				args.Entries = entries[1:]
 				heartbeat.Reset(node.leaderPeriod / 3)
+				reply, err := node.sendAppendEntries(ctx, cli, args)
 				if ok {
 					timer.Reset(node.leaderPeriod)
 				}
-				reply, err := node.sendAppendEntries(ctx, cli, args)
 				if err == nil {
 					nextIndex = nextIndex + num
 					matchIndex = nextIndex - 1
@@ -283,12 +283,16 @@ func (node *Node) slaveSender(ctx context.Context, status Status, nodeID NodeID,
 					break
 				}
 				args.LastIncludedEntry = entry
-				args.Data = node.snapshoter.Read()
-				if ok {
-					heartbeat.Reset(node.leaderPeriod / 3)
+				args.Data, err = node.snapshoter.Read()
+				if err != nil {
+					node.Errorf("read snapshot failed: %v", err)
+					break
 				}
-				timer.Reset(node.leaderPeriod)
+				heartbeat.Reset(node.leaderPeriod / 3)
 				_, err = node.sendInstallSnapshot(ctx, cli, args)
+				if ok {
+					timer.Reset(node.leaderPeriod)
+				}
 				if err == nil {
 					nextIndex = node.snapLastIndex + 1
 					matchIndex = node.snapLastIndex
@@ -316,7 +320,8 @@ func (node *Node) slaveSender(ctx context.Context, status Status, nodeID NodeID,
 	}
 }
 
-func (node *Node) followerWork(ctx context.Context) {
+func (node *Node) followerWork(ctx context.Context, prePare chan struct{}) {
+	node.Info("follower work start")
 	atomic.StoreUint64(&node.leaderLastIndex, 0)
 	node.slaveMu.Lock()
 	node.slaveTimer = time.NewTimer(node.followerPeriod)
@@ -324,6 +329,8 @@ func (node *Node) followerWork(ctx context.Context) {
 	oldLader, _ := node.config.GetLeader()
 
 	atomic.StoreInt32(&node.status, Follower)
+	prePare <- struct{}{}
+	close(prePare)
 	for {
 		select {
 		case <-node.slaveTimer.C:
@@ -346,7 +353,8 @@ func (node *Node) followerWork(ctx context.Context) {
 	}
 }
 
-func (node *Node) learnerWork(ctx context.Context) {
+func (node *Node) learnerWork(ctx context.Context, prePare chan struct{}) {
+	node.Info("learner work start")
 	atomic.StoreUint64(&node.leaderLastIndex, 0)
 	node.slaveMu.Lock()
 	node.slaveTimer = time.NewTimer(node.followerPeriod)
@@ -354,6 +362,8 @@ func (node *Node) learnerWork(ctx context.Context) {
 	oldLeader, oldversion := node.config.GetLeader()
 
 	conn, err := grpc.Dial(oldLeader)
+	prePare <- struct{}{}
+	close(prePare)
 	if err != nil {
 		node.Errorf("leader dial %s failed: %v", oldLeader, err)
 		return

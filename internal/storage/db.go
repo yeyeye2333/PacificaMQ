@@ -28,16 +28,16 @@ const (
 	MetaLastPacificaIndex = "LastPacificaIndex"
 )
 
-func NewStorage(ops Options) (storage Storage, err error) {
+func NewStorage(ctx context.Context, ops *Options) (storage Storage, err error) {
 	if ops.Path == "" {
 		return nil, errors.New("path is empty")
 	}
 	db := &DB{
-		ro: ops.ReadOptions,
-		wo: ops.WriteOptions,
+		ctx: ctx,
+		ro:  ops.ReadOptions,
+		wo:  ops.WriteOptions,
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	db.ctx, db.cancel = ctx, cancel
+
 	db.minBytesPerBatch, db.maxWaitPerBatch = ops.minBytesPerBatch, ops.maxWaitPerBatch
 
 	dbOps := ops.Options
@@ -85,6 +85,7 @@ func NewStorage(ops Options) (storage Storage, err error) {
 		for {
 			select {
 			case <-db.ctx.Done():
+				db.close()
 				return
 			case <-db.appendCh:
 			case <-timer.C:
@@ -190,7 +191,6 @@ type appendEntry struct {
 
 type DB struct {
 	ctx       context.Context
-	cancel    context.CancelFunc
 	db        *grocksdb.DB
 	cfHandles []*grocksdb.ColumnFamilyHandle
 
@@ -206,7 +206,8 @@ type DB struct {
 	appendBytes uint64
 }
 
-func (db *DB) AppendMessages(msgs [][]byte, producerID *storage_info.ProducerID, LastPacificaIndex uint64) (uint64, error) {
+// ch返回0表示失败
+func (db *DB) AppendMessages(msgs [][]byte, producerID *storage_info.ProducerID, LastPacificaIndex uint64) <-chan uint64 {
 	appendIndexCh := make(chan uint64, 1)
 	db.appendMu.Lock()
 	db.appendQueue = append(db.appendQueue, appendEntry{
@@ -227,12 +228,23 @@ func (db *DB) AppendMessages(msgs [][]byte, producerID *storage_info.ProducerID,
 	}
 	db.appendMu.Unlock()
 
-	appendIndex := <-appendIndexCh
-	if appendIndex == 0 {
-		return 0, errors.New("append index failed")
-	} else {
-		return appendIndex, nil
+	return appendIndexCh
+}
+
+func (db *DB) SetProducerID(producerID *storage_info.ProducerID, LastPacificaIndex uint64) error {
+	ID := producerID.GetID()
+	producerID.ID = nil
+	now := time.Now().Unix()
+	producerID.Timestamp = &now
+	producerIDData, err := proto.Marshal(producerID)
+	if err != nil {
+		return err
 	}
+	err = db.db.Put(db.wo, append([]byte(MetaProducerIDPrefix), conv.Uint64ToBytes(ID)...), producerIDData)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // 考虑其它方法调用频率较少或只有一个消费者调用，可直接操作数据库
@@ -297,7 +309,7 @@ func (db *DB) GetLastPacificaIndex() (uint64, error) {
 	return conv.BytesToUint64(value.Data()), nil
 }
 
-func (db *DB) CommitIndex(Index *storage_info.ConsumerCommitIndex) error {
+func (db *DB) CommitIndex(Index *storage_info.ConsumerCommitIndex, LastPacificaIndex uint64) error {
 	groupID := Index.GetGroupID()
 	Index.GroupID = nil
 	now := time.Now().Unix()
@@ -314,24 +326,23 @@ func (db *DB) CommitIndex(Index *storage_info.ConsumerCommitIndex) error {
 	return nil
 }
 
-func (db *DB) GetCommitedIndex(GroupID string) uint64 {
+func (db *DB) GetCommitedIndex(GroupID string) (uint64, error) {
 	value, err := db.db.Get(db.ro, append([]byte(MetaConsumedIndex), []byte(GroupID)...))
 	defer value.Free()
 	if err != nil {
-		return 0
+		return 0, err
 	}
 	Index := &storage_info.ConsumerCommitIndex{}
 	if len(value.Data()) > 0 {
 		err = proto.Unmarshal(value.Data(), Index)
 		if err != nil {
-			return 0
+			return 0, err
 		}
 	}
-	return Index.GetCommitIndex()
+	return Index.GetCommitIndex(), nil
 }
 
-func (db *DB) Close() {
-	db.cancel()
+func (db *DB) close() {
 	db.ro.Destroy()
 	db.wo.Destroy()
 	for _, cf := range db.cfHandles {

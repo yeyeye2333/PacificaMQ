@@ -2,17 +2,19 @@ package storage
 
 import (
 	"bytes"
+	"context"
 	"testing"
 
 	"github.com/yeyeye2333/PacificaMQ/api/storage_info"
 )
 
 func TestBasicSetAndGet(t *testing.T) {
-	s, err := NewStorage(*NewOptions(WithPath("./db")))
+	ctx, cancel := context.WithCancel(context.Background())
+	s, err := NewStorage(ctx, NewOptions(WithPath("./db")))
 	if err != nil {
 		t.Error(err)
 	}
-	defer s.Close()
+	defer cancel()
 
 	appendTests := []struct {
 		msg               [][]byte
@@ -34,9 +36,10 @@ func TestBasicSetAndGet(t *testing.T) {
 	}
 
 	for _, test := range appendTests {
-		index, err := s.AppendMessages(test.msg, test.producerID, test.lastPacificaIndex)
-		if err != nil {
-			t.Error(err)
+		indexCh := s.AppendMessages(test.msg, test.producerID, test.lastPacificaIndex)
+		index := <-indexCh
+		if index == 0 {
+			t.Error("append failed")
 		}
 		t.Log("got index", index)
 		if index != test.wantedIndex {

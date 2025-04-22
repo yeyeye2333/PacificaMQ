@@ -13,7 +13,9 @@ service Broker {
 
 enum RetCode {
     SUCCESS = 0;
-    ERROR = 1;
+    NotLeader = 1;
+    TimeOut = 2;
+    ErrOther = 3;
 }
 
 message PushMessagesRequest {
@@ -27,8 +29,7 @@ message PushMessagesRequest {
         optional string TopicName = 1;
         repeated Partition Partitions = 2;
     }
-    optional int32 Acks = 1;
-    repeated Topic Topics = 2;
+    repeated Topic Topics = 1;
 }
 
 message PushMessagesResponse {
