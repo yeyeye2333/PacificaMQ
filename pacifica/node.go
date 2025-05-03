@@ -76,6 +76,9 @@ type Node struct {
 
 	leaderTimers map[NodeID]*time.Timer //主要用于follower超时，leader主协程非并发使用
 	leaderPeriod time.Duration
+
+	// 回调
+	onBecomeLeader func(version uint64, leader string, followers []string) error
 }
 
 func NewNode(ctx context.Context, options *Options) (*Node, error) {
@@ -99,6 +102,7 @@ func NewNode(ctx context.Context, options *Options) (*Node, error) {
 		removeFollowerCh: make(chan NodeID, 1),
 		addFollowerCh:    make(chan NodeID, 1),
 		leaderPeriod:     time.Duration(options.LeaderPeriod) * time.Millisecond,
+		onBecomeLeader:   options.OnBecomeLeader,
 	}
 	node.Info("node address:", node.me)
 
@@ -262,6 +266,8 @@ func (node *Node) becomeCallBack(status Status) {
 	prePare := make(chan struct{})
 	switch status {
 	case Leader:
+		leader, version := node.config.GetLeader()
+		go node.onBecomeLeader(version, leader, node.config.GetFollowers()) ///////
 		go node.leaderWork(ctx, prePare)
 	case Follower:
 		go node.followerWork(ctx, prePare)

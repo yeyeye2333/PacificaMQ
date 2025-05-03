@@ -21,6 +21,9 @@ type Options struct {
 	FollowerPeriod int64 `default:"2000"`
 	LearnerPeriod  int64 `default:"2000"`
 	LeaderPeriod   int64 `default:"1000"`
+
+	// 回调
+	OnBecomeLeader func(version uint64, leader string, followers []string) error `default:"-"`
 }
 
 func defaultOptions() *Options {
@@ -31,6 +34,7 @@ func defaultOptions() *Options {
 	options.StorageOpts = storage.NewOptions()
 	opts := []Option{
 		WithLogger(logger.GetLogger()),
+		WithOnBecomeLeader(func(version uint64, leader string, followers []string) error { return nil }),
 	}
 	for _, opt := range opts {
 		opt(options)
@@ -100,5 +104,11 @@ func WithLeaderPeriod(period int64) Option {
 func WithMaxNumsOnce(max uint64) Option {
 	return func(options *Options) {
 		options.MaxNumsOnce = max
+	}
+}
+
+func WithOnBecomeLeader(f func(version uint64, leader string, followers []string) error) Option {
+	return func(options *Options) {
+		options.OnBecomeLeader = f
 	}
 }

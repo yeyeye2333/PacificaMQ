@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-option go_package = "github.com/yeyeye2333/PacificaMQ/test/test_grpc";
+option go_package = "test/test_grpc";
 
 package test_grpc;
 

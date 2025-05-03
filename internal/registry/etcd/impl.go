@@ -296,6 +296,7 @@ func (r *etcdRegistry) Close() error {
 	return r.cli.Close()
 }
 
+// get后init（有数据就传入putType），删除旧订阅，监听从get的rev+1开始，go一个process监听到的事件（知道ctx取消），将cancel装入subs
 func (r *etcdRegistry) createSub(key string, listener common.Listener) error {
 	lis := newListener(listener, r.rootPath, r.brokerPrefix, r.partitionPrefix, r.consumerPrefix)
 	getResp, err := r.kv.Get(r.ctx, key, clientv3.WithPrefix())
@@ -341,6 +342,7 @@ func (r *etcdRegistry) createSub(key string, listener common.Listener) error {
 	return nil
 }
 
+// 从sub取出cancel并调用，删除subs的key
 func (r *etcdRegistry) deleteSub(key string) {
 	r.subLock.Lock()
 	defer r.subLock.Unlock()

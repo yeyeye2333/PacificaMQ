@@ -10,6 +10,7 @@ import (
 type partitionOptions struct {
 	StorageOpts  *storage.Options  `default:"-"`
 	PacificaOpts *pacifica.Options `default:"-"`
+	RegistryOpts *regCM.Options    `default:"-"`
 	PartitionID  int32             `default:"0"`
 	MaxTimeOut   int64             `default:"2000"` //单位：ms
 }
@@ -18,6 +19,7 @@ type partitionOptions struct {
 type Options struct {
 	PartitionOpts *partitionOptions
 	RegistryOpts  *regCM.Options `default:"-"`
+	Address       string         `default:"127.0.0.1:50000"`
 }
 
 func defaultOptions() *Options {
@@ -69,5 +71,6 @@ func WithMaxTimeOut(t int64) Option {
 func WithRegistry(opts ...regCM.Option) Option {
 	return func(o *Options) {
 		o.RegistryOpts = regCM.NewOptions(opts...)
+		o.PartitionOpts.RegistryOpts = o.RegistryOpts
 	}
 }

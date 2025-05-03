@@ -51,6 +51,7 @@ func NewStorage(ctx context.Context, ops *Options) (storage Storage, err error) 
 	fifoo := ops.FifoOPtions
 	fifoo.SetMaxTableFilesSize(ops.MaxTableFilesSize + (msgCfOps.GetWriteBufferSize() * uint64(msgCfOps.GetMinWriteBufferNumberToMerge())))
 	msgCfOps.SetFIFOCompactionOptions(fifoo)
+	msgCfOps.AllowMmapReads()
 
 	metaCfOps := grocksdb.NewDefaultOptions()
 	metaTableOps := grocksdb.NewDefaultBlockBasedTableOptions()

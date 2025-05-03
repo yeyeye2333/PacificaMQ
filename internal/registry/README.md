@@ -1,0 +1,6 @@
+- 注册中心(etcd)
+    - Root:/PacificaMQ/${ClusterName}
+    - broker: .../broker/ids/${brokerAddress} -> ownPartitions
+    - partitionsNum: .../broker/topics/${topicName}/${partitionsNum} -> partitionStatus
+    - consumer: .../consumers/${gid}/ids/${cid} -> subList (lease)
+    - consumerLeader: .../consumers/${gid}/leader -> ${cid}

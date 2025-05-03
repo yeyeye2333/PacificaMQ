@@ -5,7 +5,7 @@ option go_package = "api/broker_rpc";
 
 service Broker {
     rpc PushMessages(stream PushMessagesRequest) returns (stream PushMessagesResponse) {}
-    rpc PullMessages(PullMessagesRequest) returns (stream PullMessagesResponse) {}
+    rpc PullMessages(PullMessagesRequest) returns (PullMessagesResponse) {}
     rpc CommitIndex(CommitIndexRequest) returns (CommitIndexResponse) {}
     rpc GetCommitIndex(GetCommitIndexRequest) returns (GetCommitIndexResponse) {}
     rpc InitProducerID(InitProducerIDRequest) returns (InitProducerIDResponse) {}

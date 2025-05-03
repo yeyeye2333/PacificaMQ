@@ -10,11 +10,12 @@ import (
 	rpc "github.com/yeyeye2333/PacificaMQ/api/broker_rpc"
 	"github.com/yeyeye2333/PacificaMQ/api/storage_info"
 	"github.com/yeyeye2333/PacificaMQ/internal/logger"
+	"github.com/yeyeye2333/PacificaMQ/internal/registry"
+	regCM "github.com/yeyeye2333/PacificaMQ/internal/registry/common"
 	"github.com/yeyeye2333/PacificaMQ/internal/storage"
 	"github.com/yeyeye2333/PacificaMQ/pacifica"
 )
 
-// todo:提交lastPacificaIndex,但需保证不丢失(参考kiwi)
 func NewPartition(ctx context.Context, opts *partitionOptions) (*partition, error) {
 	p := &partition{
 		ctx:         ctx,
@@ -38,6 +39,11 @@ func NewPartition(ctx context.Context, opts *partitionOptions) (*partition, erro
 		}
 	}
 	p.nextProducerID++
+
+	p.registry, err = registry.NewRegistry(opts.RegistryOpts)
+	if err != nil {
+		return nil, err
+	}
 
 	p.pacifica, err = pacifica.NewNode(ctx, opts.PacificaOpts)
 	if err != nil {
@@ -69,6 +75,7 @@ type partition struct {
 	partitionID int32
 	maxTimeOut  time.Duration
 	pacifica    *pacifica.Node
+	registry    regCM.Registry
 	storage     storage.Storage
 	applyCh     <-chan *pacifica.ApplyMsg
 
@@ -76,10 +83,6 @@ type partition struct {
 	commitMap      map[commitKey]chan *applyRet
 	producerMap    map[uint64]uint64
 	nextProducerID uint64
-}
-
-func (p *partition) close() {
-
 }
 
 func (p *partition) apply() {
@@ -159,7 +162,7 @@ func (p *partition) apply() {
 								GroupID:     &groupID,
 								CommitIndex: &index,
 							}
-							err := p.storage.CommitIndex(commitIndex)
+							err := p.storage.CommitIndex(commitIndex, entry.GetIndex())
 							p.mu.Lock()
 							defer p.mu.Unlock()
 							ch, ok := p.commitMap[key]
@@ -185,7 +188,7 @@ func (p *partition) apply() {
 							err := p.storage.SetProducerID(&storage_info.ProducerID{
 								ID:       &id,
 								Sequence: new(uint64),
-							})
+							}, entry.GetIndex())
 							p.mu.Lock()
 							defer p.mu.Unlock()
 							ch, ok := p.commitMap[key]

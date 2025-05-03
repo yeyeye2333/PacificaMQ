@@ -1,0 +1,25 @@
+syntax = "proto3";
+package consumer_rebalance;
+
+option go_package = "api/consumer_rebalance";
+
+service consumer_rebalance {
+    rpc Rebalance(RebalanceRequest) returns (RebalanceResponse) {}
+    rpc Commit(CommitRequest)returns (CommitResponse) {}
+}
+
+message RebalanceRequest {
+    repeated string topics = 1;
+    repeated int32  PartitionIDs = 2;
+}
+
+message RebalanceResponse {
+}
+
+message CommitRequest {
+    repeated string topics = 1;
+    repeated int32  PartitionIDs = 2;
+}
+
+message CommitResponse {
+}

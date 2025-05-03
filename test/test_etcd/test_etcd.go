@@ -42,4 +42,7 @@ func main() {
 	if err != nil {
 		fmt.Println(4, err)
 	}
+	// result, err := KV.Txn(context.Background()).If(clientv3.Compare(clientv3.Value("sample_key"), "!=", "my-value")).Then(
+	// 	clientv3.OpGet("sample_key"),
+	// ).Commit()
 }
